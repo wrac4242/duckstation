@@ -108,6 +108,8 @@ add_library(common
   vulkan/util.h
   wav_writer.cpp
   wav_writer.h
+  window_info.cpp
+  window_info.h
 )
 
 target_include_directories(common PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")

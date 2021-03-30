@@ -709,7 +709,7 @@ void AndroidHostInterface::SurfaceChanged(ANativeWindow* surface, int format, in
     if (m_display && (width != m_display->GetWindowWidth() || height != m_display->GetWindowHeight()))
     {
       m_display->ResizeRenderWindow(width, height);
-      OnHostDisplayResized(width, height, m_display->GetWindowScale());
+      OnHostDisplayResized();
     }
 
     return;
