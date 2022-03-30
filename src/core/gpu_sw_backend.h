@@ -1,8 +1,15 @@
 #pragma once
+#include "common/platform.h"
 #include "gpu_backend.h"
 #include <array>
 #include <memory>
 #include <vector>
+
+#if defined(CPU_X86) || defined(CPU_X64)
+#include <emmintrin.h>
+#include <immintrin.h>
+#include <smmintrin.h>
+#endif
 
 class GPU_SW_Backend final : public GPUBackend
 {
@@ -98,6 +105,21 @@ protected:
   //////////////////////////////////////////////////////////////////////////
   // Rasterization
   //////////////////////////////////////////////////////////////////////////
+#if defined(CPU_X86) || defined(CPU_X64)
+  using PixelVectorType = __m128i;
+#elif defined(CPU_AARCH32) || defined(CPU_AARCH64)
+  using PixelVectorType = int32x4_t;
+#endif
+
+  PixelVectorType GatherVector(PixelVectorType coord_x, PixelVectorType coord_y) const;
+  PixelVectorType LoadVector(u32 x, u32 y) const;
+  void StoreVector(u32 x, u32 y, PixelVectorType color);
+
+  template<bool texture_enable, bool raw_texture_enable, bool transparency_enable, bool dithering_enable>
+  void ShadePixelVector(const GPUBackendDrawCommand* cmd, u32 start_x, u32 y, PixelVectorType vertex_color_rg,
+                        PixelVectorType vertex_color_ba, PixelVectorType texcoord_x, PixelVectorType texcoord_y,
+                        PixelVectorType preserve_mask, PixelVectorType dither);
+
   template<bool texture_enable, bool raw_texture_enable, bool transparency_enable, bool dithering_enable>
   void ShadePixel(const GPUBackendDrawCommand* cmd, u32 x, u32 y, u8 color_r, u8 color_g, u8 color_b, u8 texcoord_x,
                   u8 texcoord_y);

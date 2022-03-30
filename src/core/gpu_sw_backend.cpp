@@ -79,6 +79,332 @@ constexpr GPU_SW_Backend::DitherLUT GPU_SW_Backend::ComputeDitherLUT()
 
 static constexpr GPU_SW_Backend::DitherLUT s_dither_lut = GPU_SW_Backend::ComputeDitherLUT();
 
+GPU_SW_Backend::PixelVectorType ALWAYS_INLINE_RELEASE GPU_SW_Backend::GatherVector(PixelVectorType coord_x,
+                                                                                   PixelVectorType coord_y) const
+{
+  PixelVectorType offsets = _mm_slli_epi32(coord_y, 11);        // y * 2048 (1024 * sizeof(pixel))
+  offsets = _mm_add_epi32(offsets, _mm_slli_epi32(coord_x, 1)); // x * 2 (x * sizeof(pixel))
+
+  const u32 o0 = _mm_extract_epi32(offsets, 0);
+  const u32 o1 = _mm_extract_epi32(offsets, 1);
+  const u32 o2 = _mm_extract_epi32(offsets, 2);
+  const u32 o3 = _mm_extract_epi32(offsets, 3);
+
+  u16 p1, p2, p3;
+  PixelVectorType pixels = _mm_loadu_si16(reinterpret_cast<const u8*>(m_vram.data()) + o0);
+  std::memcpy(&p1, reinterpret_cast<const u8*>(m_vram.data()) + o1, sizeof(p1));
+  std::memcpy(&p2, reinterpret_cast<const u8*>(m_vram.data()) + o2, sizeof(p2));
+  std::memcpy(&p3, reinterpret_cast<const u8*>(m_vram.data()) + o3, sizeof(p3));
+  pixels = _mm_insert_epi16(pixels, p1, 2);
+  pixels = _mm_insert_epi16(pixels, p2, 4);
+  pixels = _mm_insert_epi16(pixels, p3, 6);
+
+  return pixels;
+}
+
+GPU_SW_Backend::PixelVectorType GPU_SW_Backend::LoadVector(u32 x, u32 y) const
+{
+  if (x <= (VRAM_WIDTH - 4))
+  {
+    return _mm_cvtepu16_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(&m_vram[y * VRAM_WIDTH + x])));
+  }
+  else
+  {
+    const u16* line = &m_vram[y * VRAM_WIDTH];
+    PixelVectorType pixels = _mm_loadu_si16(&line[(x++) & VRAM_WIDTH_MASK]);
+    pixels = _mm_insert_epi16(pixels, line[(x++) & VRAM_WIDTH_MASK], 2);
+    pixels = _mm_insert_epi16(pixels, line[(x++) & VRAM_WIDTH_MASK], 4);
+    pixels = _mm_insert_epi16(pixels, line[x & VRAM_WIDTH_MASK], 6);
+    return pixels;
+  }
+}
+
+void GPU_SW_Backend::StoreVector(u32 x, u32 y, PixelVectorType color)
+{
+  if (x <= (VRAM_WIDTH - 4))
+  {
+    _mm_storel_epi64(reinterpret_cast<__m128i*>(&m_vram[y * VRAM_WIDTH + x]), color);
+  }
+  else
+  {
+    u16* line = &m_vram[y * VRAM_WIDTH];
+    _mm_storeu_si16(&line[(x++) & VRAM_WIDTH_MASK], color);
+    line[(x++) & VRAM_WIDTH_MASK] = static_cast<u16>(_mm_extract_epi16(color, 1));
+    line[(x++) & VRAM_WIDTH_MASK] = static_cast<u16>(_mm_extract_epi16(color, 2));
+    line[x & VRAM_WIDTH_MASK] = static_cast<u16>(_mm_extract_epi16(color, 3));
+  }
+}
+
+static void RGB5A1ToRG_BA(__m128i rgb5a1, __m128i& rg, __m128i& ba)
+{
+  rg = _mm_and_si128(rgb5a1, _mm_set1_epi32(0x1F));                                        // R | R | R | R
+  rg = _mm_or_si128(rg, _mm_slli_epi32(_mm_and_si128(rgb5a1, _mm_set1_epi32(0x3E0)), 11)); // R0G0 | R0G0 | R0G0 | R0G0
+  ba = _mm_and_si128(_mm_srli_epi32(rgb5a1, 10), _mm_set1_epi32(0x1F));                    // B | B | B | B
+  ba = _mm_or_si128(ba, _mm_slli_epi32(_mm_and_si128(rgb5a1, _mm_set1_epi32(0x8000)), 1)); // B0A0 | B0A0 | B0A0 | B0A0
+}
+
+static __m128i RG_BAToRGB5A1(__m128i rg, __m128i ba)
+{
+  __m128i res;
+
+  res = _mm_and_si128(rg, _mm_set1_epi32(0x1F));                                         // R | R | R | R
+  res = _mm_or_si128(res, _mm_and_si128(_mm_srli_epi32(rg, 11), _mm_set1_epi32(0x3E0))); // RG | RG | RG | RG
+  res = _mm_or_si128(res, _mm_slli_epi32(_mm_and_si128(ba, _mm_set1_epi32(0x1F)), 10));  // RGB | RGB | RGB | RGB
+  res = _mm_or_si128(res, _mm_slli_epi32(_mm_srli_epi32(ba, 16), 15));                   // RGBA | RGBA | RGBA | RGBA
+
+  return res;
+}
+
+// Color repeated twice for RG packing, then duplicated to we can load based on the X offset.
+static constexpr s16 VECTOR_DITHER_MATRIX[4][16] = {
+#define P(m, n) static_cast<s16>(DITHER_MATRIX[m][n]), static_cast<s16>(DITHER_MATRIX[m][n])
+#define R(m) P(m, 0), P(m, 1), P(m, 2), P(m, 3), P(m, 0), P(m, 1), P(m, 2), P(m, 3)
+
+  {R(0)}, {R(1)}, {R(2)}, {R(3)}
+
+#undef R
+#undef P
+};
+
+template<bool texture_enable, bool raw_texture_enable, bool transparency_enable, bool dithering_enable>
+void ALWAYS_INLINE_RELEASE GPU_SW_Backend::ShadePixelVector(const GPUBackendDrawCommand* cmd, u32 start_x, u32 y,
+                                                            PixelVectorType vertex_color_rg,
+                                                            PixelVectorType vertex_color_ba, PixelVectorType texcoord_x,
+                                                            PixelVectorType texcoord_y, PixelVectorType preserve_mask,
+                                                            PixelVectorType dither)
+{
+  static const PixelVectorType coord_mask_x = _mm_set1_epi32(VRAM_WIDTH_MASK);
+  static const PixelVectorType coord_mask_y = _mm_set1_epi32(VRAM_HEIGHT_MASK);
+
+  PixelVectorType color;
+
+  if constexpr (texture_enable)
+  {
+    // Apply texture window
+    texcoord_x =
+      _mm_or_si128(_mm_and_si128(texcoord_x, _mm_set1_epi32(cmd->window.and_x)), _mm_set1_epi32(cmd->window.or_x));
+    texcoord_y =
+      _mm_or_si128(_mm_and_si128(texcoord_y, _mm_set1_epi32(cmd->window.and_y)), _mm_set1_epi32(cmd->window.or_y));
+
+    const PixelVectorType base_x = _mm_set1_epi32(cmd->draw_mode.GetTexturePageBaseX());
+    const PixelVectorType base_y = _mm_set1_epi32(cmd->draw_mode.GetTexturePageBaseY());
+    const PixelVectorType palette_x = _mm_set1_epi32(cmd->palette.GetXBase());
+    const PixelVectorType palette_y = _mm_set1_epi32(cmd->palette.GetYBase());
+
+    texcoord_y = _mm_add_epi32(base_y, texcoord_y);
+    texcoord_y = _mm_and_si128(texcoord_y, coord_mask_y);
+
+    PixelVectorType texture_color;
+    switch (cmd->draw_mode.texture_mode)
+    {
+      case GPUTextureMode::Palette4Bit:
+      {
+        auto load_texcoord_x = _mm_srli_epi32(texcoord_x, 2);
+        load_texcoord_x = _mm_add_epi32(base_x, load_texcoord_x);
+        load_texcoord_x = _mm_and_si128(load_texcoord_x, coord_mask_x);
+
+        // todo: sse4 path
+        PixelVectorType palette_shift = _mm_slli_epi32(_mm_and_si128(texcoord_x, _mm_set1_epi32(3)), 2);
+        PixelVectorType palette_indices = GatherVector(load_texcoord_x, texcoord_y);
+        palette_indices = _mm_and_si128(_mm_srlv_epi32(palette_indices, palette_shift), _mm_set1_epi32(0x0F));
+
+        PixelVectorType offset_palette_x = _mm_and_si128(_mm_add_epi32(palette_x, palette_indices), coord_mask_x);
+        texture_color = GatherVector(offset_palette_x, palette_y);
+      }
+      break;
+
+      case GPUTextureMode::Palette8Bit:
+      {
+        auto load_texcoord_x = _mm_srli_epi32(texcoord_x, 1);
+        load_texcoord_x = _mm_add_epi32(base_x, load_texcoord_x);
+        load_texcoord_x = _mm_and_si128(load_texcoord_x, coord_mask_x);
+
+        PixelVectorType palette_shift = _mm_slli_epi32(_mm_and_si128(texcoord_x, _mm_set1_epi32(1)), 3);
+        PixelVectorType palette_indices = GatherVector(load_texcoord_x, texcoord_y);
+        palette_indices = _mm_and_si128(_mm_srlv_epi32(palette_indices, palette_shift), _mm_set1_epi32(0xFF));
+
+        PixelVectorType offset_palette_x = _mm_and_si128(_mm_add_epi32(palette_x, palette_indices), coord_mask_x);
+        texture_color = GatherVector(offset_palette_x, palette_y);
+      }
+      break;
+
+      default:
+      {
+        texcoord_x = _mm_add_epi32(base_x, texcoord_x);
+        texcoord_x = _mm_and_si128(texcoord_x, coord_mask_x);
+        texture_color = GatherVector(texcoord_x, texcoord_y);
+      }
+      break;
+    }
+
+    // check for zero texture colour across the 4 pixels, early out if so
+    const __m128i texture_transparent_mask = _mm_cmpeq_epi32(texture_color, _mm_set1_epi32(0));
+    preserve_mask = _mm_or_si128(preserve_mask, texture_transparent_mask);
+    if (_mm_movemask_ps(_mm_castsi128_ps(texture_transparent_mask)) == 0xF)
+      return;
+
+    if constexpr (raw_texture_enable)
+    {
+      color = texture_color;
+    }
+    else
+    {
+      __m128i trg, tba;
+      RGB5A1ToRG_BA(texture_color, trg, tba);
+
+      // now we have both the texture and vertex color in RG/GA pairs, for 4 pixels, which we can multiply
+      auto rg = _mm_mullo_epi16(trg, vertex_color_rg);
+      auto ba = _mm_mullo_epi16(tba, vertex_color_ba);
+
+      // TODO: Dither
+      // Convert to 5bit.
+      if constexpr (dithering_enable)
+      {
+        rg = _mm_srai_epi16(_mm_max_epi16(_mm_add_epi16(_mm_srai_epi16(rg, 4), dither), _mm_setzero_si128()), 3);
+        ba = _mm_srai_epi16(_mm_max_epi16(_mm_add_epi16(_mm_srai_epi16(ba, 4), dither), _mm_setzero_si128()), 3);
+      }
+      else
+      {
+        rg = _mm_srai_epi16(rg, 7);
+        ba = _mm_srai_epi16(ba, 7);
+      }
+
+      // Bit15 gets passed through as-is.
+      ba = _mm_blend_epi16(ba, tba, 0xAA);
+
+      // Clamp to 5bit.
+      const auto colclamp = _mm_set1_epi16(0x1F);
+      rg = _mm_min_epi16(rg, colclamp);
+      ba = _mm_min_epi16(ba, colclamp);
+
+      // And interleave back to 16bpp.
+      color = RG_BAToRGB5A1(rg, ba);
+    }
+  }
+  else
+  {
+    // Non-textured transparent polygons don't set bit 15, but are treated as transparent.
+    if constexpr (dithering_enable)
+    {
+      auto rg = _mm_srai_epi16(_mm_max_epi16(_mm_add_epi16(vertex_color_rg, dither), _mm_setzero_si128()), 3);
+      auto ba = _mm_srai_epi16(_mm_max_epi16(_mm_add_epi16(vertex_color_ba, dither), _mm_setzero_si128()), 3);
+
+      // Clamp to 5bit. We use 32bit for BA to set a to zero.
+      rg = _mm_min_epi16(rg, _mm_set1_epi16(0x1F));
+      ba = _mm_min_epi16(ba, _mm_set1_epi32(0x1F));
+
+      // And interleave back to 16bpp.
+      color = RG_BAToRGB5A1(rg, ba);
+    }
+    else
+    {
+      // Note that bit15 is set to 0 here, which the shift will do.
+      const auto rg = _mm_srli_epi16(vertex_color_rg, 3);
+      const auto ba = _mm_srli_epi16(vertex_color_ba, 3);
+      color = RG_BAToRGB5A1(rg, ba);
+    }
+  }
+
+  PixelVectorType bg_color = LoadVector(start_x, y);
+
+  if constexpr (transparency_enable)
+  {
+    __m128i transparent_mask;
+    if constexpr (texture_enable)
+    {
+      // Compute transparent_mask, ffff per lane if transparent otherwise 0000
+      transparent_mask = _mm_srai_epi16(color, 15);
+    }
+    else
+    {
+      // not used
+      UNREFERENCED_VARIABLE(transparent_mask);
+    }
+
+    // TODO: We don't need to OR color here with 0x8000 for textures.
+
+    __m128i blended_color;
+    switch (cmd->draw_mode.transparency_mode)
+    {
+      case GPUTransparencyMode::HalfBackgroundPlusHalfForeground:
+      {
+        const auto fg_bits = _mm_or_si128(color, _mm_set1_epi32(0x8000u));
+        const auto bg_bits = _mm_or_si128(bg_color, _mm_set1_epi32(0x8000u));
+        const auto res =
+          _mm_srli_epi32(_mm_sub_epi32(_mm_add_epi32(fg_bits, bg_bits),
+                                       _mm_and_si128(_mm_xor_si128(fg_bits, bg_bits), _mm_set1_epi32(0x0421u))),
+                         1);
+        blended_color = _mm_and_si128(res, _mm_set1_epi16(-1));
+      }
+      break;
+
+      case GPUTransparencyMode::BackgroundPlusForeground:
+      {
+        const auto fg_bits = _mm_or_si128(color, _mm_set1_epi32(0x8000u));
+        const auto bg_bits = _mm_and_si128(bg_color, _mm_set1_epi32(0x7FFFu));
+        const auto sum = _mm_add_epi32(fg_bits, bg_bits);
+        const auto carry =
+          _mm_and_si128(_mm_sub_epi32(sum, _mm_and_si128(_mm_xor_si128(color, bg_bits), _mm_set1_epi32(0x8421u))),
+                        _mm_set1_epi32(0x8420u));
+        const auto res = _mm_or_si128(_mm_sub_epi32(sum, carry), _mm_sub_epi32(carry, _mm_srli_epi32(carry, 5)));
+        blended_color = _mm_and_si128(res, _mm_set1_epi16(-1));
+      }
+      break;
+
+      case GPUTransparencyMode::BackgroundMinusForeground:
+      {
+        const auto bg_bits = _mm_or_epi32(bg_color, _mm_set1_epi32(0x8000u));
+        const auto fg_bits = _mm_and_si128(color, _mm_set1_epi32(0x7FFFu));
+        const auto diff = _mm_add_epi32(_mm_sub_epi32(bg_bits, fg_bits), _mm_set1_epi32(0x108420u));
+        const auto borrow =
+          _mm_and_si128(_mm_sub_epi32(diff, _mm_and_si128(_mm_xor_si128(bg_bits, fg_bits), _mm_set1_epi32(0x108420u))),
+                        _mm_set1_epi32(0x108420u));
+        const auto res = _mm_and_si128(_mm_sub_epi32(diff, borrow), _mm_sub_epi32(borrow, _mm_srli_epi32(borrow, 5)));
+        blended_color = _mm_and_si128(res, _mm_set1_epi16(-1));
+      }
+      break;
+
+      case GPUTransparencyMode::BackgroundPlusQuarterForeground:
+      default:
+      {
+        const auto bg_bits = _mm_and_si128(bg_color, _mm_set1_epi32(0x7FFFu));
+        const auto fg_bits = _mm_or_si128(
+          _mm_and_si128(_mm_srli_epi32(_mm_or_si128(color, _mm_set1_epi32(0x8000)), 2), _mm_set1_epi32(0x1CE7u)),
+          _mm_set1_epi32(0x8000u));
+
+        const auto sum = _mm_add_epi32(fg_bits, bg_bits);
+        const auto carry =
+          _mm_and_si128(_mm_sub_epi32(sum, _mm_and_si128(_mm_xor_si128(color, bg_bits), _mm_set1_epi32(0x8421u))),
+                        _mm_set1_epi32(0x8420u));
+        const auto res = _mm_or_si128(_mm_sub_epi32(sum, carry), _mm_sub_epi32(carry, _mm_srli_epi32(carry, 5)));
+        blended_color = _mm_and_si128(res, _mm_set1_epi16(-1));
+      }
+      break;
+    }
+
+    // select blended pixels for transparent pixels, otherwise consider opaque
+    if constexpr (texture_enable)
+      color = _mm_blendv_epi8(color, blended_color, transparent_mask);
+    else
+      color = blended_color;
+  }
+
+  const auto mask_and = _mm_set1_epi32(cmd->params.GetMaskAND());
+  const auto mask_or = _mm_set1_epi32(cmd->params.GetMaskOR());
+
+  PixelVectorType mask_bits_set = _mm_and_si128(bg_color, mask_and); // 8000 if masked else 0000
+  mask_bits_set = _mm_srai_epi16(mask_bits_set, 15);                 // ffff if masked else 0000
+  preserve_mask = _mm_or_si128(preserve_mask, mask_bits_set);        // ffff if preserved else 0000
+
+  const PixelVectorType inverted_preserve_mask = _mm_xor_epi32(preserve_mask, _mm_set1_epi32(-1));
+  bg_color = _mm_and_si128(bg_color, preserve_mask);
+  color = _mm_and_epi32(color, inverted_preserve_mask);
+  color = _mm_or_si128(color, bg_color);
+
+  const PixelVectorType packed_color = _mm_packus_epi32(color, color);
+  StoreVector(start_x, y, packed_color);
+}
+
 template<bool texture_enable, bool raw_texture_enable, bool transparency_enable, bool dithering_enable>
 void ALWAYS_INLINE_RELEASE GPU_SW_Backend::ShadePixel(const GPUBackendDrawCommand* cmd, u32 x, u32 y, u8 color_r,
                                                       u8 color_g, u8 color_b, u8 texcoord_x, u8 texcoord_y)
@@ -224,8 +550,18 @@ void GPU_SW_Backend::DrawRectangle(const GPUBackendDrawRectangleCommand* cmd)
 {
   const s32 origin_x = cmd->x;
   const s32 origin_y = cmd->y;
-  const auto [r, g, b] = UnpackColorRGB24(cmd->color);
-  const auto [origin_texcoord_x, origin_texcoord_y] = UnpackTexcoord(cmd->texcoord);
+
+  const auto rgba = _mm_set1_epi32(cmd->color); // RGBA | RGBA | RGBA | RGBA
+  auto rg = _mm_shufflelo_epi16(rgba, 0x00);    // RGRG | RGRG | RGRG | RGRG
+  auto ba = _mm_shufflelo_epi16(rgba, 0x55);    // BABA | BABA | BABA | BABA
+  rg = _mm_cvtepu8_epi16(rg);                   // R0G0 | R0G0 | R0G0 | R0G0
+  ba = _mm_cvtepu8_epi16(ba);                   // B0A0 | B0A0 | B0A0 | B0A0
+
+  const auto texcoord_x = _mm_add_epi32(_mm_set1_epi32(cmd->texcoord & 0xFF), _mm_set_epi32(3, 2, 1, 0));
+  auto texcoord_y = _mm_set1_epi32(cmd->texcoord >> 8);
+
+  const auto clip_left = _mm_set1_epi32(m_drawing_area.left);
+  const auto clip_right = _mm_set1_epi32(m_drawing_area.right);
 
   for (u32 offset_y = 0; offset_y < cmd->height; offset_y++)
   {
@@ -236,19 +572,35 @@ void GPU_SW_Backend::DrawRectangle(const GPUBackendDrawRectangleCommand* cmd)
       continue;
     }
 
-    const u8 texcoord_y = Truncate8(ZeroExtend32(origin_texcoord_y) + offset_y);
+    auto row_texcoord_x = texcoord_x;
+    auto xvec = _mm_add_epi32(_mm_set1_epi32(origin_x), _mm_set_epi32(3, 2, 1, 0));
+    auto wvec = _mm_sub_epi32(_mm_set1_epi32(cmd->width), _mm_set_epi32(4, 3, 2, 1));
 
-    for (u32 offset_x = 0; offset_x < cmd->width; offset_x++)
+    for (u32 offset_x = 0; offset_x < cmd->width; offset_x += 4)
     {
       const s32 x = origin_x + static_cast<s32>(offset_x);
-      if (x < static_cast<s32>(m_drawing_area.left) || x > static_cast<s32>(m_drawing_area.right))
-        continue;
 
-      const u8 texcoord_x = Truncate8(ZeroExtend32(origin_texcoord_x) + offset_x);
+      // width test
+      auto preserve_mask = _mm_cmplt_epi32(wvec, _mm_setzero_si128());
 
-      ShadePixel<texture_enable, raw_texture_enable, transparency_enable, false>(
-        cmd, static_cast<u32>(x), static_cast<u32>(y), r, g, b, texcoord_x, texcoord_y);
+      // clip test, if all pixels are outside, skip
+      preserve_mask = _mm_cmplt_epi32(xvec, clip_left);
+      preserve_mask = _mm_or_si128(preserve_mask, _mm_cmpgt_epi32(xvec, clip_right));
+      if (_mm_movemask_ps(_mm_castsi128_ps(preserve_mask)) != 0xF)
+      {
+        ShadePixelVector<texture_enable, raw_texture_enable, transparency_enable, false>(
+          cmd, x, y, rg, ba, row_texcoord_x, texcoord_y, preserve_mask, _mm_setzero_si128());
+      }
+
+      xvec = _mm_add_epi32(xvec, _mm_set1_epi32(4));
+      wvec = _mm_add_epi32(wvec, _mm_set1_epi32(4));
+
+      if constexpr (texture_enable)
+        row_texcoord_x = _mm_and_epi32(_mm_add_epi32(row_texcoord_x, _mm_set1_epi32(4)), _mm_set1_epi32(0xFF));
     }
+
+    if constexpr (texture_enable)
+      texcoord_y = _mm_and_epi32(_mm_add_epi32(texcoord_y, _mm_set1_epi32(1)), _mm_set1_epi32(0xFF));
   }
 }
 
@@ -384,24 +736,103 @@ void GPU_SW_Backend::DrawSpan(const GPUBackendDrawPolygonCommand* cmd, s32 y, s3
   if (w <= 0)
     return;
 
-  AddIDeltas_DX<shading_enable, texture_enable>(ig, idl, x_ig_adjust);
-  AddIDeltas_DY<shading_enable, texture_enable>(ig, idl, y);
+  // TODO: Precompute.
 
-  do
+  const auto clip_left = _mm_set1_epi32(m_drawing_area.left);
+  const auto clip_right = _mm_set1_epi32(m_drawing_area.right);
+
+  const auto dr_dx = _mm_set1_epi32(idl.dr_dx * 4);
+  const auto dg_dx = _mm_set1_epi32(idl.dg_dx * 4);
+  const auto db_dx = _mm_set1_epi32(idl.db_dx * 4);
+  const auto du_dx = _mm_set1_epi32(idl.du_dx * 4);
+  const auto dv_dx = _mm_set1_epi32(idl.dv_dx * 4);
+
+  const auto dr_dx_offset = _mm_set_epi32(idl.dr_dx * 3, idl.dr_dx * 2, idl.dr_dx, 0);
+  const auto dg_dx_offset = _mm_set_epi32(idl.dg_dx * 3, idl.dg_dx * 2, idl.dg_dx, 0);
+  const auto db_dx_offset = _mm_set_epi32(idl.db_dx * 3, idl.db_dx * 2, idl.db_dx, 0);
+  const auto du_dx_offset = _mm_set_epi32(idl.du_dx * 3, idl.du_dx * 2, idl.du_dx, 0);
+  const auto dv_dx_offset = _mm_set_epi32(idl.dv_dx * 3, idl.dv_dx * 2, idl.dv_dx, 0);
+
+  __m128i dr, dg, db;
+  if constexpr (shading_enable)
   {
-    const u32 r = ig.r >> (COORD_FBS + COORD_POST_PADDING);
-    const u32 g = ig.g >> (COORD_FBS + COORD_POST_PADDING);
-    const u32 b = ig.b >> (COORD_FBS + COORD_POST_PADDING);
-    const u32 u = ig.u >> (COORD_FBS + COORD_POST_PADDING);
-    const u32 v = ig.v >> (COORD_FBS + COORD_POST_PADDING);
+    dr = _mm_add_epi32(_mm_set1_epi32(ig.r + idl.dr_dx * x_ig_adjust), dr_dx_offset);
+    dg = _mm_add_epi32(_mm_set1_epi32(ig.g + idl.dg_dx * x_ig_adjust), dg_dx_offset);
+    db = _mm_add_epi32(_mm_set1_epi32(ig.b + idl.db_dx * x_ig_adjust), db_dx_offset);
+  }
+  else
+  {
+    // precompute for flat shading
+    dr = _mm_set1_epi32(ig.r >> (COORD_FBS + COORD_POST_PADDING));
+    dg = _mm_set1_epi32((ig.g >> (COORD_FBS + COORD_POST_PADDING)) << 16);
+    db = _mm_set1_epi32(ig.b >> (COORD_FBS + COORD_POST_PADDING));
+  }
 
-    ShadePixel<texture_enable, raw_texture_enable, transparency_enable, dithering_enable>(
-      cmd, static_cast<u32>(x), static_cast<u32>(y), Truncate8(r), Truncate8(g), Truncate8(b), Truncate8(u),
-      Truncate8(v));
+  auto du = _mm_add_epi32(_mm_set1_epi32(ig.u + idl.du_dx * x_ig_adjust), du_dx_offset);
+  auto dv = _mm_add_epi32(_mm_set1_epi32(ig.v + idl.dv_dx * x_ig_adjust), dv_dx_offset);
 
-    x++;
-    AddIDeltas_DX<shading_enable, texture_enable>(ig, idl);
-  } while (--w > 0);
+  // TODO: Move to caller.
+  if constexpr (shading_enable)
+  {
+    dr = _mm_add_epi32(dr, _mm_set1_epi32(idl.dr_dy * y));
+    dg = _mm_add_epi32(dg, _mm_set1_epi32(idl.dg_dy * y));
+    db = _mm_add_epi32(db, _mm_set1_epi32(idl.db_dy * y));
+  }
+
+  if constexpr (texture_enable)
+  {
+    du = _mm_add_epi32(du, _mm_set1_epi32(idl.du_dy * y));
+    dv = _mm_add_epi32(dv, _mm_set1_epi32(idl.dv_dy * y));
+  }
+
+  const auto dither = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&VECTOR_DITHER_MATRIX[static_cast<u32>(y) & 3][(static_cast<u32>(x) & 3) * 2]));
+
+  auto xvec = _mm_add_epi32(_mm_set1_epi32(x), _mm_set_epi32(3, 2, 1, 0));
+  auto wvec = _mm_sub_epi32(_mm_set1_epi32(w), _mm_set_epi32(4, 3, 2, 1));
+
+  for (s32 count = (w + 3) / 4; count > 0; --count)
+  {
+    // R000 | R000 | R000 | R000
+    // R0G0 | R0G0 | R0G0 | R0G0
+    const auto r = shading_enable ? _mm_srli_epi32(dr, (COORD_FBS + COORD_POST_PADDING)) : dr;
+    const auto g = shading_enable ? _mm_slli_epi32(_mm_srli_epi32(dg, COORD_FBS + COORD_POST_PADDING), 16) :
+                                    dg; // get G into the correct position
+    const auto b = shading_enable ? _mm_srli_epi32(db, (COORD_FBS + COORD_POST_PADDING)) : db;
+    const auto u = _mm_srli_epi32(du, (COORD_FBS + COORD_POST_PADDING));
+    const auto v = _mm_srli_epi32(dv, (COORD_FBS + COORD_POST_PADDING));
+
+    const auto rg = _mm_blend_epi16(r, g, 0xAA);
+
+    // mask based on what's outside the span
+    auto preserve_mask = _mm_cmplt_epi32(wvec, _mm_setzero_si128());
+
+    // clip test, if all pixels are outside, skip
+    preserve_mask = _mm_or_si128(preserve_mask, _mm_cmplt_epi32(xvec, clip_left));
+    preserve_mask = _mm_or_si128(preserve_mask, _mm_cmpgt_epi32(xvec, clip_right));
+    if (_mm_movemask_ps(_mm_castsi128_ps(preserve_mask)) != 0xF)
+    {
+      ShadePixelVector<texture_enable, raw_texture_enable, transparency_enable, dithering_enable>(
+        cmd, static_cast<u32>(x), static_cast<u32>(y), rg, b, u, v, preserve_mask, dither);
+    }
+
+    x += 4;
+
+    xvec = _mm_add_epi32(xvec, _mm_set1_epi32(4));
+    wvec = _mm_sub_epi32(wvec, _mm_set1_epi32(4));
+
+    if constexpr (shading_enable)
+    {
+      dr = _mm_add_epi32(dr, dr_dx);
+      dg = _mm_add_epi32(dg, dg_dx);
+      db = _mm_add_epi32(db, db_dx);
+    }
+
+    if constexpr (texture_enable)
+    {
+      du = _mm_add_epi32(du, du_dx);
+      dv = _mm_add_epi32(dv, dv_dx);
+    }
+  }
 }
 
 template<bool shading_enable, bool texture_enable, bool raw_texture_enable, bool transparency_enable,
