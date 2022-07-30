@@ -113,15 +113,19 @@ public:
   /// Call when the window size changes externally to recreate any resources.
   virtual void ResizeRenderWindow(s32 new_window_width, s32 new_window_height) = 0;
 
+  virtual bool SupportsDisplayPixelFormat(HostDisplayPixelFormat format) const = 0;
+
   /// Creates an abstracted RGBA8 texture. If dynamic, the texture can be updated with UpdateTexture() below.
   virtual std::unique_ptr<HostDisplayTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
                                                             HostDisplayPixelFormat format, const void* data,
                                                             u32 data_stride, bool dynamic = false) = 0;
   virtual void UpdateTexture(HostDisplayTexture* texture, u32 x, u32 y, u32 width, u32 height, const void* data,
                              u32 data_stride) = 0;
-
   virtual bool DownloadTexture(const void* texture_handle, HostDisplayPixelFormat texture_format, u32 x, u32 y,
                                u32 width, u32 height, void* out_data, u32 out_data_stride) = 0;
+  virtual bool MapTexture(HostDisplayTexture* texture, u32 x, u32 y, u32 width, u32 height, void** out_buffer,
+                          u32* out_pitch) = 0;
+  virtual void UnmapTexture(HostDisplayTexture* texture) = 0;
 
   /// Returns false if the window was completely occluded.
   virtual bool Render() = 0;
@@ -136,6 +140,8 @@ public:
   virtual bool CreateImGuiContext() = 0;
   virtual void DestroyImGuiContext() = 0;
   virtual bool UpdateImGuiFontTexture() = 0;
+
+  virtual bool GetHostRefreshRate(float* refresh_rate);
 
   const void* GetDisplayTextureHandle() const { return m_display_texture_handle; }
   const s32 GetDisplayTopMargin() const { return m_display_top_margin; }
@@ -199,15 +205,6 @@ public:
   static bool ConvertTextureDataToRGBA8(u32 width, u32 height, std::vector<u32>& texture_data, u32& texture_data_stride,
                                         HostDisplayPixelFormat format);
   static void FlipTextureDataRGBA8(u32 width, u32 height, std::vector<u32>& texture_data, u32 texture_data_stride);
-
-  virtual bool SupportsDisplayPixelFormat(HostDisplayPixelFormat format) const = 0;
-
-  virtual bool BeginSetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, void** out_buffer,
-                                     u32* out_pitch) = 0;
-  virtual void EndSetDisplayPixels() = 0;
-  virtual bool SetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, const void* buffer, u32 pitch);
-
-  virtual bool GetHostRefreshRate(float* refresh_rate);
 
   void SetDisplayLinearFiltering(bool enabled) { m_display_linear_filtering = enabled; }
   void SetDisplayTopMargin(s32 height) { m_display_top_margin = height; }
@@ -312,10 +309,10 @@ void ReleaseHostDisplay();
 
 /// Returns false if the window was completely occluded. If frame_skip is set, the frame won't be
 /// displayed, but the GPU command queue will still be flushed.
-//bool BeginPresentFrame(bool frame_skip);
+// bool BeginPresentFrame(bool frame_skip);
 
 /// Presents the frame to the display, and renders OSD elements.
-//void EndPresentFrame();
+// void EndPresentFrame();
 
 /// Provided by the host; renders the display.
 void RenderDisplay();

@@ -271,8 +271,7 @@ bool VulkanHostDisplay::SupportsDisplayPixelFormat(HostDisplayPixelFormat format
   return ((fp.optimalTilingFeatures & required) == required);
 }
 
-bool VulkanHostDisplay::BeginSetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, void** out_buffer,
-                                              u32* out_pitch)
+bool VulkanHostDisplay::MapTexture(HostDisplayTexture* texture, u32 x, u32 y, u32 width, u32 height, void** out_buffer, u32* out_pitch)
 {
   const VkFormat vk_format = s_display_pixel_format_mapping[static_cast<u32>(format)];
 

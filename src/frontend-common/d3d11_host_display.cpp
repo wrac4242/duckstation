@@ -182,24 +182,15 @@ bool D3D11HostDisplay::SupportsDisplayPixelFormat(HostDisplayPixelFormat format)
   return (SUCCEEDED(m_device->CheckFormatSupport(dfmt, &support)) && ((support & required) == required));
 }
 
-bool D3D11HostDisplay::BeginSetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, void** out_buffer,
-                                             u32* out_pitch)
+bool D3D11HostDisplay::MapTexture(HostDisplayTexture* texture, HostDisplayPixelFormat format, u32 width, u32 height,
+                                  void** out_buffer, u32* out_pitch)
 {
-  ClearDisplayTexture();
-
-  const DXGI_FORMAT dxgi_format = s_display_pixel_format_mapping[static_cast<u32>(format)];
-  if (m_display_pixels_texture.GetWidth() < width || m_display_pixels_texture.GetHeight() < height ||
-      m_display_pixels_texture.GetFormat() != dxgi_format)
-  {
-    if (!m_display_pixels_texture.Create(m_device.Get(), width, height, 1, 1, dxgi_format, D3D11_BIND_SHADER_RESOURCE,
-                                         nullptr, 0, true))
-    {
-      return false;
-    }
-  }
+  D3D11HostDisplayTexture* tex = static_cast<D3D11HostDisplayTexture*>(texture);
+  if (!tex->IsDynamic())
+    return false;
 
   D3D11_MAPPED_SUBRESOURCE sr;
-  HRESULT hr = m_context->Map(m_display_pixels_texture.GetD3DTexture(), 0, D3D11_MAP_WRITE_DISCARD, 0, &sr);
+  HRESULT hr = m_context->Map(tex->GetD3DTexture(), 0, D3D11_MAP_WRITE_DISCARD, 0, &sr);
   if (FAILED(hr))
   {
     Log_ErrorPrintf("Map pixels texture failed: %08X", hr);
@@ -208,15 +199,12 @@ bool D3D11HostDisplay::BeginSetDisplayPixels(HostDisplayPixelFormat format, u32 
 
   *out_buffer = sr.pData;
   *out_pitch = sr.RowPitch;
-
-  SetDisplayTexture(m_display_pixels_texture.GetD3DSRV(), format, m_display_pixels_texture.GetWidth(),
-                    m_display_pixels_texture.GetHeight(), 0, 0, static_cast<u32>(width), static_cast<u32>(height));
   return true;
 }
 
-void D3D11HostDisplay::EndSetDisplayPixels()
+void D3D11HostDisplay::UnmapTexture(HostDisplayTexture* texture)
 {
-  m_context->Unmap(m_display_pixels_texture.GetD3DTexture(), 0);
+  m_context->Unmap(static_cast<D3D11HostDisplayTexture*>(texture)->GetD3DTexture(), 0);
 }
 
 bool D3D11HostDisplay::GetHostRefreshRate(float* refresh_rate)

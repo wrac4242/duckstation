@@ -48,8 +48,25 @@ public:
   const D3D12::Texture& GetTexture() const { return m_texture; }
   D3D12::Texture& GetTexture() { return m_texture; }
 
+  u32 GetMapX() const { return m_map_x; }
+  u32 GetMapY() const { return m_map_y; }
+  u32 GetMapWidth() const { return m_map_width; }
+  u32 GetMapHeight() const { return m_map_height; }
+
+  void SetMapRect(u32 x, u32 y, u32 width, u32 height)
+  {
+    m_map_x = x;
+    m_map_y = y;
+    m_map_width = width;
+    m_map_height = height;
+  }
+
 private:
   D3D12::Texture m_texture;
+  u32 m_map_x = 0;
+  u32 m_map_y = 0;
+  u32 m_map_width = 0;
+  u32 m_map_height = 0;
 };
 
 D3D12HostDisplay::D3D12HostDisplay() = default;
@@ -139,34 +156,21 @@ bool D3D12HostDisplay::SupportsDisplayPixelFormat(HostDisplayPixelFormat format)
   return g_d3d12_context->SupportsTextureFormat(dfmt);
 }
 
-bool D3D12HostDisplay::BeginSetDisplayPixels(HostDisplayPixelFormat format, u32 width, u32 height, void** out_buffer,
-                                             u32* out_pitch)
+bool D3D12HostDisplay::MapTexture(HostDisplayTexture* texture, u32 x, u32 y, u32 width, u32 height, void** out_buffer,
+                                  u32* out_pitch)
 {
-  ClearDisplayTexture();
-
-  const DXGI_FORMAT dxgi_format = s_display_pixel_format_mapping[static_cast<u32>(format)];
-  if (m_display_pixels_texture.GetWidth() < width || m_display_pixels_texture.GetHeight() < height ||
-      m_display_pixels_texture.GetFormat() != dxgi_format)
-  {
-    if (!m_display_pixels_texture.Create(width, height, 1, dxgi_format, dxgi_format, DXGI_FORMAT_UNKNOWN,
-                                         DXGI_FORMAT_UNKNOWN, D3D12_RESOURCE_FLAG_NONE))
-    {
-      return false;
-    }
-  }
-
-  if (!m_display_pixels_texture.BeginStreamUpdate(0, 0, width, height, out_buffer, out_pitch))
+  D3D12HostDisplayTexture* tex = static_cast<D3D12HostDisplayTexture*>(texture);
+  if (!tex->GetTexture().BeginStreamUpdate(0, 0, width, height, out_buffer, out_pitch))
     return false;
 
-  SetDisplayTexture(&m_display_pixels_texture, format, m_display_pixels_texture.GetWidth(),
-                    m_display_pixels_texture.GetHeight(), 0, 0, static_cast<u32>(width), static_cast<u32>(height));
+  tex->SetMapRect(x, y, width, height);
   return true;
 }
 
-void D3D12HostDisplay::EndSetDisplayPixels()
+void D3D12HostDisplay::UnmapTexture(HostDisplayTexture* texture)
 {
-  m_display_pixels_texture.EndStreamUpdate(0, 0, static_cast<u32>(m_display_texture_view_width),
-                                           static_cast<u32>(m_display_texture_view_height));
+  D3D12HostDisplayTexture* tex = static_cast<D3D12HostDisplayTexture*>(texture);
+  tex->GetTexture().EndStreamUpdate(tex->GetMapX(), tex->GetMapY(), tex->GetMapWidth(), tex->GetMapHeight());
 }
 
 bool D3D12HostDisplay::GetHostRefreshRate(float* refresh_rate)
