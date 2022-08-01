@@ -704,9 +704,6 @@ void CDROM::DeliverAsyncInterrupt()
   Assert(m_pending_async_interrupt != 0 && !HasPendingInterrupt());
   Log_DebugPrintf("Delivering async interrupt %u", m_pending_async_interrupt);
 
-  if (m_pending_async_interrupt == static_cast<u8>(Interrupt::DataReady))
-    m_current_read_sector_buffer = m_current_write_sector_buffer;
-
   m_response_fifo.Clear();
   m_response_fifo.PushFromQueue(&m_async_response_fifo);
   m_interrupt_flag_register = m_pending_async_interrupt;
@@ -1812,8 +1809,11 @@ void CDROM::BeginReading(TickCount ticks_late /* = 0 */, bool after_seek /* = fa
   m_drive_state = DriveState::Reading;
   m_drive_event->SetInterval(ticks);
   m_drive_event->Schedule(first_sector_ticks);
-  m_current_read_sector_buffer = 0;
+  m_current_read_sector_buffer = NUM_SECTOR_BUFFERS - 1;
   m_current_write_sector_buffer = 0;
+  m_deliver_sector_buffer = 0;
+  m_buffered_sector_count = 0;
+  m_buffered_sectors_remaining = NUM_SECTORS_TO_BUFFER;
 
   m_requested_lba = m_current_lba;
   m_reader.QueueReadSector(m_requested_lba);
@@ -1855,8 +1855,11 @@ void CDROM::BeginPlaying(u8 track, TickCount ticks_late /* = 0 */, bool after_se
   m_drive_state = DriveState::Playing;
   m_drive_event->SetInterval(ticks);
   m_drive_event->Schedule(first_sector_ticks);
-  m_current_read_sector_buffer = 0;
+  m_current_read_sector_buffer = NUM_SECTOR_BUFFERS - 1;
   m_current_write_sector_buffer = 0;
+  m_deliver_sector_buffer = 0;
+  m_buffered_sector_count = 0;
+  m_buffered_sectors_remaining = NUM_SECTORS_TO_BUFFER;
 
   m_requested_lba = m_current_lba;
   m_reader.QueueReadSector(m_requested_lba);
@@ -2066,9 +2069,9 @@ bool CDROM::CompleteSeek()
         {
           if (logical)
           {
-            ProcessDataSectorHeader(m_reader.GetSectorBuffer().data());
-            seek_okay = (m_last_sector_header.minute == seek_mm && m_last_sector_header.second == seek_ss &&
-                         m_last_sector_header.frame == seek_ff);
+            const CDImage::SectorHeader* header =
+              reinterpret_cast<const CDImage::SectorHeader*>(m_reader.GetSectorBuffer().data() + SECTOR_SYNC_SIZE);
+            seek_okay = (header->minute == seek_mm && header->second == seek_ss && header->frame == seek_ff);
           }
         }
         else
@@ -2320,15 +2323,11 @@ void CDROM::DoSectorRead()
       return;
     }
   }
-  else
-  {
-    ProcessDataSectorHeader(m_reader.GetSectorBuffer().data());
-  }
 
   u32 next_sector = m_current_lba + 1u;
   if (is_data_sector && m_drive_state == DriveState::Reading)
   {
-    ProcessDataSector(m_reader.GetSectorBuffer().data(), subq);
+    EnqueueDataSector(m_reader.GetSectorBuffer().data());
   }
   else if (!is_data_sector &&
            (m_drive_state == DriveState::Playing || (m_drive_state == DriveState::Reading && m_mode.cdda)))
@@ -2348,6 +2347,8 @@ void CDROM::DoSectorRead()
                       is_data_sector ? "data" : "audio", is_data_sector ? "reading" : "playing");
   }
 
+  ProcessDataSector();
+
   m_requested_lba = next_sector;
   m_reader.QueueReadSector(m_requested_lba);
 }
@@ -2355,59 +2356,87 @@ void CDROM::DoSectorRead()
 void CDROM::ProcessDataSectorHeader(const u8* raw_sector)
 {
   std::memcpy(&m_last_sector_header, &raw_sector[SECTOR_SYNC_SIZE], sizeof(m_last_sector_header));
-  std::memcpy(&m_last_sector_subheader, &raw_sector[SECTOR_SYNC_SIZE + sizeof(m_last_sector_header)],
-              sizeof(m_last_sector_subheader));
+  std::memcpy(&m_last_sector_subheader, &raw_sector[SECTOR_SYNC_SIZE + sizeof(m_last_sector_header)], sizeof(m_last_sector_subheader));
   m_last_sector_header_valid = true;
 }
 
-void CDROM::ProcessDataSector(const u8* raw_sector, const CDImage::SubChannelQ& subq)
+void CDROM::EnqueueDataSector(const u8* raw_sector)
 {
-  const u32 sb_num = (m_current_write_sector_buffer + 1) % NUM_SECTOR_BUFFERS;
-  Log_DevPrintf("Read sector %u: mode %u submode 0x%02X into buffer %u", m_current_lba,
-                ZeroExtend32(m_last_sector_header.sector_mode), ZeroExtend32(m_last_sector_subheader.submode.bits),
-                sb_num);
-
-  if (m_mode.xa_enable && m_last_sector_header.sector_mode == 2)
+  const CDImage::SectorHeader* header =
+    reinterpret_cast<const CDImage::SectorHeader*>(m_reader.GetSectorBuffer().data() + SECTOR_SYNC_SIZE);
+  const CDXA::XASubHeader* subheader = reinterpret_cast<const CDXA::XASubHeader*>(
+    m_reader.GetSectorBuffer().data() + SECTOR_SYNC_SIZE + sizeof(CDImage::SectorHeader));
+  if (header->sector_mode != 2)
   {
-    if (m_last_sector_subheader.submode.realtime && m_last_sector_subheader.submode.audio)
-    {
-      ProcessXAADPCMSector(raw_sector, subq);
-
-      // Audio+realtime sectors aren't delivered to the CPU.
-      return;
-    }
-  }
-
-  // TODO: How does XA relate to this buffering?
-  SectorBuffer* sb = &m_sector_buffers[sb_num];
-  if (sb->size > 0)
-  {
-    Log_DevPrintf("Sector buffer %u was not read, previous sector dropped",
-                  (m_current_write_sector_buffer - 1) % NUM_SECTOR_BUFFERS);
+    Log_WarningPrintf("Ignoring non-mode2 sector at %u", m_current_lba);
+    return;
   }
 
   if (m_mode.ignore_bit)
     Log_WarningPrintf("SetMode.4 bit set on read of sector %u", m_current_lba);
 
-  if (m_mode.read_raw_sector)
+  const u32 sb_num = m_current_write_sector_buffer;
+  m_current_write_sector_buffer = (m_current_write_sector_buffer + 1) % NUM_SECTOR_BUFFERS;
+
+  Log_DevPrintf("Enqueue data sector %u: %02X:%02X:%02X mode %u submode 0x%02X into buffer %u", m_current_lba,
+                ZeroExtend32(header->minute), ZeroExtend32(header->second), ZeroExtend32(header->frame),
+                ZeroExtend32(header->sector_mode), ZeroExtend32(subheader->submode.bits), sb_num);
+
+  SectorBuffer* sb = &m_sector_buffers[sb_num];
+  if (sb->size > 0)
+    Log_DevPrintf("Sector buffer %u was not read, previous sector dropped", m_current_write_sector_buffer);
+
+  std::memcpy(sb->data.data(), raw_sector, CDImage::RAW_SECTOR_SIZE);
+  sb->size = CDImage::RAW_SECTOR_SIZE;
+
+  m_buffered_sector_count++;
+  Log_DevPrintf("[%u] %u sectors buffered...", m_current_lba, m_buffered_sector_count);
+}
+
+void CDROM::ProcessDataSector()
+{
+  // Wait until we have at least two sectors buffered before we process any.
+  // This simulates the delay between subq and data present on the hardware, where it's doing ECC and other processing.
+  if (m_buffered_sectors_remaining > 0 && (m_buffered_sectors_remaining--) > 0)
   {
-    std::memcpy(sb->data.data(), raw_sector + SECTOR_SYNC_SIZE, RAW_SECTOR_OUTPUT_SIZE);
-    sb->size = RAW_SECTOR_OUTPUT_SIZE;
+    Log_DebugPrintf("Only %u sectors buffered, waiting...", m_buffered_sector_count);
+    return;
   }
-  else
+
+  // Anything to process?
+  if (m_buffered_sector_count == 0)
+    return;
+
+  // Add a delay for the next sector if we're not full
+  m_buffered_sector_count--;
+  if (m_buffered_sector_count < NUM_SECTORS_TO_BUFFER)
+    m_buffered_sectors_remaining++;
+
+  m_current_read_sector_buffer = (m_current_read_sector_buffer + 1) % NUM_SECTOR_BUFFERS;
+  const u32 sb_num = m_current_read_sector_buffer;
+
+  SectorBuffer* sb = &m_sector_buffers[sb_num];
+  if (sb->size == 0)
   {
-    // TODO: This should actually depend on the mode...
-    if (m_last_sector_header.sector_mode != 2)
+    Log_WarningPrintf("Empty sector buffer %u?!", sb_num);
+    return;
+  }
+
+  // Read out and store header (for GetLocL).
+  ProcessDataSectorHeader(sb->data.data());
+
+  // Non-mode 2 sectors aren't buffered.
+  if (m_mode.xa_enable /*&& m_last_sector_header.sector_mode == 2*/)
+  {
+    if (m_last_sector_subheader.submode.realtime && m_last_sector_subheader.submode.audio)
     {
-      Log_WarningPrintf("Ignoring non-mode2 sector at %u", m_current_lba);
+      ProcessXAADPCMSector(sb->data.data());
+
+      // Audio+realtime sectors aren't delivered to the CPU.
+      sb->size = 0;
       return;
     }
-
-    std::memcpy(sb->data.data(), raw_sector + CDImage::SECTOR_SYNC_SIZE + 12, DATA_SECTOR_OUTPUT_SIZE);
-    sb->size = DATA_SECTOR_OUTPUT_SIZE;
   }
-
-  m_current_write_sector_buffer = sb_num;
 
   // Deliver to CPU
   if (HasPendingAsyncInterrupt())
@@ -2418,13 +2447,20 @@ void CDROM::ProcessDataSector(const u8* raw_sector, const CDImage::SubChannelQ& 
 
   if (HasPendingInterrupt())
   {
-    const u32 sectors_missed = (m_current_write_sector_buffer - m_current_read_sector_buffer) % NUM_SECTOR_BUFFERS;
+    const u32 sectors_missed = (sb_num - m_deliver_sector_buffer) % NUM_SECTOR_BUFFERS;
     if (sectors_missed > 1)
       Log_WarningPrintf("Interrupt not processed in time, missed %u sectors", sectors_missed - 1);
   }
+  else
+  {
+    // This sector is now ready for delivery.
+    Log_DevPrintf("Deliver sector %02X:%02X:%02X to CPU", ZeroExtend32(m_last_sector_header.minute),
+      ZeroExtend32(m_last_sector_header.second), ZeroExtend32(m_last_sector_header.frame));
+    m_deliver_sector_buffer = sb_num;
 
-  m_async_response_fifo.Push(m_secondary_status.bits);
-  SetAsyncInterrupt(Interrupt::DataReady);
+    m_async_response_fifo.Push(m_secondary_status.bits);
+    SetAsyncInterrupt(Interrupt::DataReady);
+  }
 }
 
 static std::array<std::array<s16, 29>, 7> s_zigzag_table = {
@@ -2531,7 +2567,7 @@ void CDROM::ResetAudioDecoder()
   m_audio_fifo.Clear();
 }
 
-void CDROM::ProcessXAADPCMSector(const u8* raw_sector, const CDImage::SubChannelQ& subq)
+void CDROM::ProcessXAADPCMSector(const u8* raw_sector)
 {
   // Check for automatic ADPCM filter.
   if (m_mode.xa_filter && (m_last_sector_subheader.file_number != m_xa_filter_file_number ||
@@ -2719,24 +2755,31 @@ void CDROM::LoadDataFIFO()
   }
 
   // any data to load?
-  SectorBuffer& sb = m_sector_buffers[m_current_read_sector_buffer];
+  SectorBuffer& sb = m_sector_buffers[m_deliver_sector_buffer];
   if (sb.size == 0)
   {
     Log_WarningPrintf("Attempting to load empty sector buffer");
-    m_data_fifo.PushRange(sb.data.data(), RAW_SECTOR_OUTPUT_SIZE);
+    m_data_fifo.PushRange(sb.data.data() + SECTOR_SYNC_SIZE, RAW_SECTOR_OUTPUT_SIZE);
   }
   else
   {
-    m_data_fifo.PushRange(sb.data.data(), sb.size);
+    if (m_mode.read_raw_sector)
+      m_data_fifo.PushRange(sb.data.data() + SECTOR_SYNC_SIZE, RAW_SECTOR_OUTPUT_SIZE);
+    else
+      m_data_fifo.PushRange(sb.data.data() + SECTOR_SYNC_SIZE + 12, DATA_SECTOR_OUTPUT_SIZE);
     sb.size = 0;
   }
 
-  Log_DebugPrintf("Loaded %u bytes to data FIFO from buffer %u", m_data_fifo.GetSize(), m_current_read_sector_buffer);
+  const CDImage::SectorHeader* header = reinterpret_cast<const CDImage::SectorHeader*>(sb.data.data() + SECTOR_SYNC_SIZE);
+  Log_DevPrintf("Loaded %u bytes to data FIFO from buffer %u [%02X:%02X:%02X]", m_data_fifo.GetSize(),
+                m_deliver_sector_buffer, header->minute, header->second, header->frame);
 
-  SectorBuffer& next_sb = m_sector_buffers[m_current_write_sector_buffer];
+  // FIXME
+  SectorBuffer& next_sb = m_sector_buffers[m_current_read_sector_buffer];
   if (next_sb.size > 0)
   {
-    Log_DevPrintf("Sending additional INT1 for missed sector in buffer %u", m_current_write_sector_buffer);
+    Log_DevPrintf("Sending additional INT1 for missed sector in buffer %u", m_current_read_sector_buffer);
+    m_deliver_sector_buffer = m_current_read_sector_buffer;
     m_async_response_fifo.Push(m_secondary_status.bits);
     SetAsyncInterrupt(Interrupt::DataReady);
   }

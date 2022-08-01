@@ -87,7 +87,9 @@ private:
     MOTOR_ON_RESPONSE_TICKS = 400000,
 
     MAX_FAST_FORWARD_RATE = 12,
-    FAST_FORWARD_RATE_STEP = 4
+    FAST_FORWARD_RATE_STEP = 4,
+
+    NUM_SECTORS_TO_BUFFER = 2
   };
 
   static constexpr u8 INTERRUPT_REGISTER_MASK = 0x1F;
@@ -314,9 +316,10 @@ private:
   void DoSpeedChangeOrImplicitTOCReadComplete();
   void DoIDRead();
   void DoSectorRead();
+  void EnqueueDataSector(const u8* raw_sector);
+  void ProcessDataSector();
   void ProcessDataSectorHeader(const u8* raw_sector);
-  void ProcessDataSector(const u8* raw_sector, const CDImage::SubChannelQ& subq);
-  void ProcessXAADPCMSector(const u8* raw_sector, const CDImage::SubChannelQ& subq);
+  void ProcessXAADPCMSector(const u8* raw_sector);
   void ProcessCDDASector(const u8* raw_sector, const CDImage::SubChannelQ& subq);
   void StopReadingWithDataEnd();
   void StartMotor();
@@ -395,12 +398,15 @@ private:
 
   struct SectorBuffer
   {
-    HeapArray<u8, RAW_SECTOR_OUTPUT_SIZE> data;
+    HeapArray<u8, CDImage::RAW_SECTOR_SIZE> data;
     u32 size;
   };
 
   u32 m_current_read_sector_buffer = 0;
   u32 m_current_write_sector_buffer = 0;
+  u32 m_deliver_sector_buffer = 0;
+  u32 m_buffered_sector_count = 0;
+  u32 m_buffered_sectors_remaining = 0;
   std::array<SectorBuffer, NUM_SECTOR_BUFFERS> m_sector_buffers;
 
   CDROMAsyncReader m_reader;
