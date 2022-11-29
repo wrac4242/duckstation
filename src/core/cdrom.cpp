@@ -165,7 +165,8 @@ void CDROM::Reset()
 
   UpdateStatusRegister();
 
-  SetHoldPosition(0, true);
+  SetHoldPosition(0);
+  SetPhysicalPosition(0, true);
 }
 
 void CDROM::SoftReset(TickCount ticks_late)
@@ -208,7 +209,7 @@ void CDROM::SoftReset(TickCount ticks_late)
   if (HasMedia())
   {
     const TickCount speed_change_ticks = was_double_speed ? GetTicksForSpeedChange() : 0;
-    const TickCount seek_ticks = (m_current_lba != 0) ? GetTicksForSeek(0) : 0;
+    const TickCount seek_ticks = (m_current_lba != 0) ? GetTicksForSeek(0, false, false) : 0;
     const TickCount total_ticks = std::max<TickCount>(speed_change_ticks + seek_ticks, INIT_TICKS) - ticks_late;
     Log_DevPrintf("CDROM init total disc ticks = %d (speed change = %d, seek = %d)", total_ticks, speed_change_ticks,
                   seek_ticks);
@@ -344,7 +345,8 @@ void CDROM::InsertMedia(std::unique_ptr<CDImage> media)
     StartMotor();
 
   m_reader.SetMedia(std::move(media));
-  SetHoldPosition(0, true);
+  SetHoldPosition(0);
+  SetPhysicalPosition(0, true);
 }
 
 std::unique_ptr<CDImage> CDROM::RemoveMedia(bool for_disc_swap)
@@ -788,7 +790,7 @@ TickCount CDROM::GetTicksForRead()
   return m_mode.double_speed ? (tps / 150) : (tps / 75);
 }
 
-TickCount CDROM::GetTicksForSeek(CDImage::LBA new_lba, bool ignore_speed_change)
+TickCount CDROM::GetTicksForSeek(CDImage::LBA new_lba, bool data, bool ignore_speed_change)
 {
   static constexpr TickCount MIN_TICKS = 20000;
 
@@ -818,8 +820,7 @@ TickCount CDROM::GetTicksForSeek(CDImage::LBA new_lba, bool ignore_speed_change)
 
   if (lba_diff < 32)
   {
-    // Special case: when we land exactly on the right sector, we're already too late.
-    ticks += ticks_per_sector * std::min<u32>(5u, (lba_diff == 0) ? 5u : lba_diff);
+    ticks += ticks_per_sector * std::min<u32>(5u, lba_diff);
   }
   else
   {
@@ -863,6 +864,13 @@ TickCount CDROM::GetTicksForSeek(CDImage::LBA new_lba, bool ignore_speed_change)
                   (static_cast<float>(ticks) / static_cast<float>(ticks_per_second)) * 1000.0f);
   }
 
+  // above numbers were all computed including the two sector delay, so reverse it
+  if (data && !m_mode.cdda)
+  {
+    const u32 tsd = ticks_per_sector * 2u;
+    ticks = std::max<u32>((ticks > tsd) ? (ticks - tsd) : 0u, MIN_TICKS);
+  }
+
   if (g_settings.cdrom_seek_speedup > 1)
     ticks = std::min<u32>(ticks / g_settings.cdrom_seek_speedup, MIN_TICKS);
 
@@ -891,10 +899,10 @@ TickCount CDROM::GetTicksForTOCRead()
 
 CDImage::LBA CDROM::GetNextSectorToBeRead()
 {
-  if (!IsReadingOrPlaying())
+  if (!IsReadingOrPlaying() || !m_read_buffer_count)
     return m_current_lba;
 
-  return m_sector_read_buffer.lba;
+  return m_sector_read_buffers[m_read_buffer_pos].lba;
 }
 
 void CDROM::BeginCommand(Command command)
@@ -1037,7 +1045,8 @@ void CDROM::ExecuteCommand(TickCount ticks_late)
       else
       {
         SendACKAndStat();
-        SetHoldPosition(0, true);
+        SetHoldPosition(0);
+        SetPhysicalPosition(0, true);
         QueueCommandSecondResponse(Command::ReadTOC, GetTicksForTOCRead());
       }
 
@@ -1798,7 +1807,7 @@ void CDROM::BeginReading(TickCount ticks_late /* = 0 */, bool after_seek /* = fa
   Log_DebugPrintf("Starting reading @ LBA %u", m_current_lba);
 
   const TickCount ticks = GetTicksForRead();
-  const TickCount first_sector_ticks = ticks + (after_seek ? 0 : GetTicksForSeek(m_current_lba)) - ticks_late;
+  const TickCount first_sector_ticks = ticks + (after_seek ? 0 : GetTicksForSeek(m_current_lba, true, false)) - ticks_late;
 
   ResetAudioDecoder();
 
@@ -1840,7 +1849,7 @@ void CDROM::BeginPlaying(u8 track, TickCount ticks_late /* = 0 */, bool after_se
   }
 
   const TickCount ticks = GetTicksForRead();
-  const TickCount first_sector_ticks = ticks + (after_seek ? 0 : GetTicksForSeek(m_current_lba, true)) - ticks_late;
+  const TickCount first_sector_ticks = ticks + (after_seek ? 0 : GetTicksForSeek(m_current_lba, false, false)) - ticks_late;
 
   ClearSectorBuffers();
   ResetAudioDecoder();
@@ -1870,7 +1879,7 @@ void CDROM::BeginSeeking(bool logical, bool read_after_seek, bool play_after_see
                   m_setloc_position.frame, m_setloc_position.ToLBA(), logical ? "logical" : "physical");
 
   const CDImage::LBA seek_lba = m_setloc_position.ToLBA();
-  const TickCount seek_time = GetTicksForSeek(seek_lba, play_after_seek);
+  const TickCount seek_time = GetTicksForSeek(seek_lba, false, play_after_seek);
 
   m_secondary_status.SetSeeking();
   m_last_sector_header_valid = false;
@@ -1943,7 +1952,7 @@ void CDROM::UpdatePhysicalPosition(bool update_logical)
     {
       Log_WarningPrintf("Jumping to hold position [%u->%u] while %s first sector", m_physical_lba, m_current_lba,
                         (m_drive_state == DriveState::Reading) ? "reading" : "playing");
-      SetHoldPosition(m_current_lba, true);
+      SetPhysicalPosition(m_current_lba, true);
     }
 
     // Otherwise, this gets updated by the read event.
@@ -2012,7 +2021,12 @@ void CDROM::UpdatePhysicalPosition(bool update_logical)
   }
 }
 
-void CDROM::SetHoldPosition(CDImage::LBA lba, bool update_subq)
+void CDROM::SetHoldPosition(CDImage::LBA lba)
+{
+  m_current_lba = lba;
+}
+
+void CDROM::SetPhysicalPosition(CDImage::LBA lba, bool update_subq)
 {
   if (update_subq && m_physical_lba != lba && CanReadMedia())
   {
@@ -2023,7 +2037,6 @@ void CDROM::SetHoldPosition(CDImage::LBA lba, bool update_subq)
       m_last_subq = subq;
   }
 
-  m_current_lba = lba;
   m_physical_lba = lba;
   m_physical_lba_update_tick = TimingEvents::GetGlobalTickCounter();
   m_physical_lba_update_carry = 0;
@@ -2258,7 +2271,8 @@ void CDROM::StopMotor()
   m_secondary_status.ClearActiveBits();
   m_secondary_status.motor_on = false;
   ClearDriveState();
-  SetHoldPosition(0, false);
+  SetHoldPosition(0);
+  SetPhysicalPosition(0, false);
   m_last_sector_header_valid = false; // TODO: correct?
 }
 
@@ -2269,13 +2283,12 @@ void CDROM::DoSectorRead()
   if (!m_reader.WaitForReadToComplete())
     Panic("Sector read failed");
 
-  const ReadBuffer& rb = m_sector_read_buffer;
-  m_current_lba = rb.lba;
-  m_physical_lba = m_current_lba;
-  m_physical_lba_update_tick = TimingEvents::GetGlobalTickCounter();
-  m_physical_lba_update_carry = 0;
+  DebugAssert(m_read_buffer_count > 0);
+  const ReadBuffer& rb = m_sector_read_buffers[m_read_buffer_pos];
+  m_read_buffer_pos = (m_read_buffer_pos + 1) % m_sector_read_buffers.size();
 
   m_secondary_status.SetReadingBits(m_drive_state == DriveState::Playing);
+  SetPhysicalPosition(rb.lba, false);
 
   const bool subq_valid = rb.subq.IsCRCValid();
   if (subq_valid)
@@ -2298,6 +2311,8 @@ void CDROM::DoSectorRead()
   }
 
   const bool is_data_sector = rb.subq.IsData();
+  const bool is_playing = (m_drive_state == DriveState::Playing || (m_drive_state == DriveState::Reading && m_mode.cdda));
+
   if (!is_data_sector)
   {
     if (m_play_track_number_bcd == 0)
@@ -2313,36 +2328,39 @@ void CDROM::DoSectorRead()
       StopReadingWithDataEnd();
       return;
     }
+
+    SetHoldPosition(rb.lba);
+    m_read_buffer_count--;
+
+    if (is_playing)
+      ProcessCDDASector(rb.data.data(), rb.subq);
+    else
+      Log_WarningPrintf("Skipping sector %u as it is an audio sector and we're not playing", m_current_lba);
+
   }
   else
   {
-    ProcessDataSectorHeader(rb.data.data());
+    if (m_drive_state == DriveState::Reading)
+    {
+      if (m_read_buffer_count > SECTOR_DECODE_DELAY)
+      {
+        // already wrapped back to the first buffered sector
+        const ReadBuffer& buffered_rb = m_sector_read_buffers[m_read_buffer_pos];
+        SetHoldPosition(buffered_rb.lba);
+        ProcessDataSector(buffered_rb.data.data(), buffered_rb.lba);
+        m_read_buffer_count--;
+      }
+    }
+    else
+    {
+      Log_WarningPrintf("Skipping sector %u as it is a data sector and we're not reading", m_current_lba);
+      SetHoldPosition(rb.lba);
+      m_read_buffer_count--;
+    }
   }
 
-  u32 next_sector = m_current_lba + 1u;
-  if (is_data_sector && m_drive_state == DriveState::Reading)
-  {
-    ProcessDataSector(rb.data.data(), rb.subq);
-  }
-  else if (!is_data_sector &&
-           (m_drive_state == DriveState::Playing || (m_drive_state == DriveState::Reading && m_mode.cdda)))
-  {
-    ProcessCDDASector(rb.data.data(), rb.subq);
-
-    if (m_fast_forward_rate != 0)
-      next_sector = m_current_lba + SignExtend32(m_fast_forward_rate);
-  }
-  else if (m_drive_state != DriveState::Reading && m_drive_state != DriveState::Playing)
-  {
-    Panic("Not reading or playing");
-  }
-  else
-  {
-    Log_WarningPrintf("Skipping sector %u as it is a %s sector and we're not %s", m_current_lba,
-                      is_data_sector ? "data" : "audio", is_data_sector ? "reading" : "playing");
-  }
-
-  QueueSectorRead(next_sector);
+  const u32 next_lba = rb.lba + ((is_playing && m_fast_forward_rate != 0) ? SignExtend32(m_fast_forward_rate) : 1u);
+  QueueSectorRead(next_lba);
 }
 
 void CDROM::ProcessDataSectorHeader(const u8* raw_sector)
@@ -2353,18 +2371,20 @@ void CDROM::ProcessDataSectorHeader(const u8* raw_sector)
   m_last_sector_header_valid = true;
 }
 
-void CDROM::ProcessDataSector(const u8* raw_sector, const CDImage::SubChannelQ& subq)
+void CDROM::ProcessDataSector(const u8* raw_sector, CDImage::LBA lba)
 {
+  ProcessDataSectorHeader(raw_sector);
+
   const u32 sb_num = (m_current_write_sector_buffer + 1) % NUM_SECTOR_BUFFERS;
-  Log_DevPrintf("Read sector %u: mode %u submode 0x%02X into buffer %u", m_current_lba,
+  Log_DevPrintf("Read sector %u: mode %u submode 0x%02X into buffer %u from read buffer %u", lba,
                 ZeroExtend32(m_last_sector_header.sector_mode), ZeroExtend32(m_last_sector_subheader.submode.bits),
-                sb_num);
+                sb_num, m_read_buffer_pos);
 
   if (m_mode.xa_enable && m_last_sector_header.sector_mode == 2)
   {
     if (m_last_sector_subheader.submode.realtime && m_last_sector_subheader.submode.audio)
     {
-      ProcessXAADPCMSector(raw_sector, subq);
+      ProcessXAADPCMSector(raw_sector);
 
       // Audio+realtime sectors aren't delivered to the CPU.
       return;
@@ -2524,7 +2544,7 @@ void CDROM::ResetAudioDecoder()
   m_audio_fifo.Clear();
 }
 
-void CDROM::ProcessXAADPCMSector(const u8* raw_sector, const CDImage::SubChannelQ& subq)
+void CDROM::ProcessXAADPCMSector(const u8* raw_sector)
 {
   // Check for automatic ADPCM filter.
   if (m_mode.xa_filter && (m_last_sector_subheader.file_number != m_xa_filter_file_number ||
@@ -2743,14 +2763,26 @@ void CDROM::ClearSectorBuffers()
 
 void CDROM::ClearReadBuffers()
 {
-  // noop for now
+  m_read_buffer_pos = 0;
+  m_read_buffer_count = 0;
+}
+
+void CDROM::ConsumeReadBuffer()
+{
+  m_read_buffer_pos = (m_read_buffer_pos + 1) % m_sector_read_buffers.size();
+  m_read_buffer_count--;
 }
 
 void CDROM::QueueSectorRead(CDImage::LBA lba)
 {
+  Log_DevPrintf("Queue read of LBA %u into read buffer %u (%u currently buffered)", lba, m_read_buffer_pos, m_read_buffer_count);
+  m_read_buffer_count++;
+
+  ReadBuffer& rb = m_sector_read_buffers[m_read_buffer_pos];
+
   m_requested_lba = lba;
-  m_sector_read_buffer.lba = lba;
-  m_reader.QueueReadSector(lba, &m_sector_read_buffer.subq, m_sector_read_buffer.data.data());
+  rb.lba = lba;
+  m_reader.QueueReadSector(lba, &rb.subq, rb.data.data());
 }
 
 void CDROM::DrawDebugWindow()

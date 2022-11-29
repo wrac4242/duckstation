@@ -87,7 +87,9 @@ private:
     MOTOR_ON_RESPONSE_TICKS = 400000,
 
     MAX_FAST_FORWARD_RATE = 12,
-    FAST_FORWARD_RATE_STEP = 4
+    FAST_FORWARD_RATE_STEP = 4,
+
+    SECTOR_DECODE_DELAY = 2,
   };
 
   static constexpr u8 INTERRUPT_REGISTER_MASK = 0x1F;
@@ -286,7 +288,7 @@ private:
   TickCount GetTicksForSpinUp();
   TickCount GetTicksForIDRead();
   TickCount GetTicksForRead();
-  TickCount GetTicksForSeek(CDImage::LBA new_lba, bool ignore_speed_change = false);
+  TickCount GetTicksForSeek(CDImage::LBA new_lba, bool data, bool ignore_speed_change);
   TickCount GetTicksForStop(bool motor_was_on);
   TickCount GetTicksForSpeedChange();
   TickCount GetTicksForTOCRead();
@@ -315,8 +317,8 @@ private:
   void DoIDRead();
   void DoSectorRead();
   void ProcessDataSectorHeader(const u8* raw_sector);
-  void ProcessDataSector(const u8* raw_sector, const CDImage::SubChannelQ& subq);
-  void ProcessXAADPCMSector(const u8* raw_sector, const CDImage::SubChannelQ& subq);
+  void ProcessDataSector(const u8* raw_sector, CDImage::LBA lba);
+  void ProcessXAADPCMSector(const u8* raw_sector);
   void ProcessCDDASector(const u8* raw_sector, const CDImage::SubChannelQ& subq);
   void StopReadingWithDataEnd();
   void StartMotor();
@@ -324,13 +326,15 @@ private:
   void BeginSeeking(bool logical, bool read_after_seek, bool play_after_seek);
   void UpdatePositionWhileSeeking();
   void UpdatePhysicalPosition(bool update_logical);
-  void SetHoldPosition(CDImage::LBA lba, bool update_subq);
+  void SetHoldPosition(CDImage::LBA lba);
+  void SetPhysicalPosition(CDImage::LBA lba, bool update_subq);
   void ResetCurrentXAFile();
   void ResetAudioDecoder();
   void LoadDataFIFO();
   void ClearSectorBuffers();
 
   void ClearReadBuffers();
+  void ConsumeReadBuffer();
   void QueueSectorRead(CDImage::LBA lba);
 
   template<bool STEREO, bool SAMPLE_RATE>
@@ -403,7 +407,9 @@ private:
     u32 lba;
   };
 
-  ReadBuffer m_sector_read_buffer;
+  std::array<ReadBuffer, SECTOR_DECODE_DELAY + 1> m_sector_read_buffers{};
+  u8 m_read_buffer_pos = 0;
+  u8 m_read_buffer_count = 0;
 
   struct SectorBuffer
   {
