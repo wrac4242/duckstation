@@ -96,11 +96,11 @@ bool CDROMAsyncReader::Precache(ProgressCallback* callback)
   return (res == CDImage::PrecacheResult::Success);
 }
 
-void CDROMAsyncReader::QueueReadSector(CDImage::LBA lba)
+void CDROMAsyncReader::QueueReadSector(CDImage::LBA lba, CDImage::SubChannelQ* subq, u8* data)
 {
   if (!IsUsingThread())
   {
-    ReadSectorNonThreaded(lba);
+    ReadSectorNonThreaded(lba, subq, data);
     return;
   }
 
@@ -113,6 +113,7 @@ void CDROMAsyncReader::QueueReadSector(CDImage::LBA lba)
     if (m_buffers[buffer_front].lba == lba)
     {
       Log_DebugPrintf("Skipping re-reading same sector %u", lba);
+      CopyOutFrontBuffer(subq, data);
       return;
     }
 
@@ -126,6 +127,7 @@ void CDROMAsyncReader::QueueReadSector(CDImage::LBA lba)
       m_buffer_count.fetch_sub(1);
       m_can_readahead.store(true);
       m_do_read_cv.notify_one();
+      CopyOutFrontBuffer(subq, data);
       return;
     }
   }
@@ -133,12 +135,14 @@ void CDROMAsyncReader::QueueReadSector(CDImage::LBA lba)
   // we need to toss away our readahead and start fresh
   Log_DebugPrintf("Readahead buffer miss, queueing seek to %u", lba);
   std::unique_lock<std::mutex> lock(m_mutex);
+  m_next_out_buffer.store(data);
+  m_next_out_subq.store(subq);
   m_next_position_set.store(true);
   m_next_position = lba;
   m_do_read_cv.notify_one();
 }
 
-bool CDROMAsyncReader::ReadSectorUncached(CDImage::LBA lba, CDImage::SubChannelQ* subq, SectorBuffer* data)
+bool CDROMAsyncReader::ReadSectorUncached(CDImage::LBA lba, CDImage::SubChannelQ* subq, u8* data)
 {
   if (!IsUsingThread())
     return InternalReadSectorUncached(lba, subq, data);
@@ -160,7 +164,7 @@ bool CDROMAsyncReader::ReadSectorUncached(CDImage::LBA lba, CDImage::SubChannelQ
   return result;
 }
 
-bool CDROMAsyncReader::InternalReadSectorUncached(CDImage::LBA lba, CDImage::SubChannelQ* subq, SectorBuffer* data)
+bool CDROMAsyncReader::InternalReadSectorUncached(CDImage::LBA lba, CDImage::SubChannelQ* subq, u8* data)
 {
   if (m_media->GetPositionOnDisc() != lba && !m_media->Seek(lba))
   {
@@ -223,6 +227,21 @@ void CDROMAsyncReader::EmptyBuffers()
   m_buffer_count.store(0);
 }
 
+void CDROMAsyncReader::CopyOutFrontBuffer(CDImage::SubChannelQ* subq, u8* data)
+{
+  const BufferSlot& sb = m_buffers[m_buffer_front.load()];
+  if (sb.result)
+  {
+    if (subq)
+      std::memcpy(subq, &sb.subq, sizeof(CDImage::SubChannelQ));
+    if (data)
+      std::memcpy(data, sb.data.data(), CDImage::RAW_SECTOR_SIZE);
+  }
+
+  m_next_out_buffer.store(nullptr);
+  m_next_out_subq.store(nullptr);
+}
+
 bool CDROMAsyncReader::ReadSectorIntoBuffer(std::unique_lock<std::mutex>& lock)
 {
   Common::Timer timer;
@@ -250,13 +269,19 @@ bool CDROMAsyncReader::ReadSectorIntoBuffer(std::unique_lock<std::mutex>& lock)
   }
 
   lock.lock();
+
+  if (CDImage::SubChannelQ* out_subq = m_next_out_subq.exchange(nullptr))
+    std::memcpy(out_subq, &buffer.subq, sizeof(CDImage::SubChannelQ));
+  if (u8* out_buffer = m_next_out_buffer.exchange(nullptr))
+    std::memcpy(out_buffer, buffer.data.data(), CDImage::RAW_SECTOR_SIZE);
+
   m_is_reading.store(false);
   m_buffer_count.fetch_add(1);
   m_notify_read_complete_cv.notify_all();
   return true;
 }
 
-void CDROMAsyncReader::ReadSectorNonThreaded(CDImage::LBA lba)
+void CDROMAsyncReader::ReadSectorNonThreaded(CDImage::LBA lba, CDImage::SubChannelQ* subq, u8* data)
 {
   Common::Timer timer;
 
@@ -276,7 +301,7 @@ void CDROMAsyncReader::ReadSectorNonThreaded(CDImage::LBA lba)
 
   Log_TracePrintf("Reading LBA %u...", buffer.lba);
 
-  buffer.result = m_media->ReadRawSector(buffer.data.data(), &buffer.subq);
+  buffer.result = m_media->ReadRawSector(data, subq);
   if (buffer.result)
   {
     const double read_time = timer.GetTimeMilliseconds();

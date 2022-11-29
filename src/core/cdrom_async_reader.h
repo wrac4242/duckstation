@@ -8,6 +8,8 @@
 
 class ProgressCallback;
 
+// TODO: Use acquire/release for all atomics.
+
 class CDROMAsyncReader
 {
 public:
@@ -45,19 +47,20 @@ public:
   /// Precaches image, either to memory, or using the underlying image precache.
   bool Precache(ProgressCallback* callback);
 
-  void QueueReadSector(CDImage::LBA lba);
+  void QueueReadSector(CDImage::LBA lba, CDImage::SubChannelQ* subq, u8* data);
 
   bool WaitForReadToComplete();
   void WaitForIdle();
 
   /// Bypasses the sector cache and reads directly from the image.
-  bool ReadSectorUncached(CDImage::LBA lba, CDImage::SubChannelQ* subq, SectorBuffer* data);
+  bool ReadSectorUncached(CDImage::LBA lba, CDImage::SubChannelQ* subq, u8* data);
 
 private:
   void EmptyBuffers();
+  void CopyOutFrontBuffer(CDImage::SubChannelQ* subq, u8* data);
   bool ReadSectorIntoBuffer(std::unique_lock<std::mutex>& lock);
-  void ReadSectorNonThreaded(CDImage::LBA lba);
-  bool InternalReadSectorUncached(CDImage::LBA lba, CDImage::SubChannelQ* subq, SectorBuffer* data);
+  void ReadSectorNonThreaded(CDImage::LBA lba, CDImage::SubChannelQ* subq, u8* data);
+  bool InternalReadSectorUncached(CDImage::LBA lba, CDImage::SubChannelQ* subq, u8* data);
   void CancelReadahead();
 
   void WorkerThreadEntryPoint();
@@ -68,6 +71,9 @@ private:
   std::thread m_read_thread;
   std::condition_variable m_do_read_cv;
   std::condition_variable m_notify_read_complete_cv;
+
+  std::atomic<u8*> m_next_out_buffer{};
+  std::atomic<CDImage::SubChannelQ*> m_next_out_subq{};
 
   std::atomic<CDImage::LBA> m_next_position{};
   std::atomic_bool m_next_position_set{false};

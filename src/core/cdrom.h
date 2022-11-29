@@ -330,6 +330,9 @@ private:
   void LoadDataFIFO();
   void ClearSectorBuffers();
 
+  void ClearReadBuffers();
+  void QueueSectorRead(CDImage::LBA lba);
+
   template<bool STEREO, bool SAMPLE_RATE>
   void ResampleXAADPCM(const s16* frames_in, u32 num_frames_in);
 
@@ -392,6 +395,15 @@ private:
   InlineFIFOQueue<u8, RESPONSE_FIFO_SIZE> m_response_fifo;
   InlineFIFOQueue<u8, RESPONSE_FIFO_SIZE> m_async_response_fifo;
   HeapFIFOQueue<u8, DATA_FIFO_SIZE> m_data_fifo;
+
+  struct ReadBuffer
+  {
+    HeapArray<u8, CDImage::RAW_SECTOR_SIZE> data;
+    CDImage::SubChannelQ subq;
+    u32 lba;
+  };
+
+  ReadBuffer m_sector_read_buffer;
 
   struct SectorBuffer
   {
