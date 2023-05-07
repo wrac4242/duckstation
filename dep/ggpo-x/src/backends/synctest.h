@@ -13,7 +13,7 @@
 #include "sync.h"
 #include "ring_buffer.h"
 
-class SyncTestBackend : public GGPOSession {
+class SyncTestBackend final : public GGPOSession {
 public:
    SyncTestBackend(GGPOSessionCallbacks *cb, char *gamename, int frames, int num_players);
    virtual ~SyncTestBackend();
@@ -25,10 +25,8 @@ public:
    virtual GGPOErrorCode IncrementFrame(uint16_t checksum);
    virtual GGPOErrorCode Logv(char *fmt, va_list list);
    virtual GGPOErrorCode DisconnectPlayer(GGPOPlayerHandle handle)  { return GGPO_OK; }
-   virtual GGPOErrorCode Chat(const char* text) override { return GGPO_ERRORCODE_UNSUPPORTED; }
    virtual GGPOErrorCode CurrentFrame(int& current) override;
-   virtual GGPOErrorCode PollNetwork() override { return GGPO_OK; };
-   virtual GGPOErrorCode SetManualNetworkPolling(bool value) override { return GGPO_OK; };
+   virtual GGPOErrorCode OnPacket(ENetPeer* peer, const ENetPacket* pkt) override { return GGPO_ERRORCODE_UNSUPPORTED; }
 
  protected:
    struct SavedInfo {

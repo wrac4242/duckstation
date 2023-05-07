@@ -9,7 +9,6 @@
 #define _SPECTATOR_H
 
 #include "types.h"
-#include "poll.h"
 #include "sync.h"
 #include "backend.h"
 #include "timesync.h"
@@ -17,7 +16,7 @@
 
 #define SPECTATOR_FRAME_BUFFER_SIZE    64
 
-class SpectatorBackend : public GGPOSession,  Udp::Callbacks {
+class SpectatorBackend final : public GGPOSession {
 public:
    SpectatorBackend(GGPOSessionCallbacks *cb, const char *gamename, uint16 localport, int num_players, int input_size, char *hostip, u_short hostport);
    virtual ~SpectatorBackend();
@@ -34,13 +33,8 @@ public:
    virtual GGPOErrorCode SetFrameDelay(GGPOPlayerHandle player, int delay) { return GGPO_ERRORCODE_UNSUPPORTED; }
    virtual GGPOErrorCode SetDisconnectTimeout(int timeout) { return GGPO_ERRORCODE_UNSUPPORTED; }
    virtual GGPOErrorCode SetDisconnectNotifyStart(int timeout) { return GGPO_ERRORCODE_UNSUPPORTED; }
-   virtual GGPOErrorCode Chat(const char* text) override { return GGPO_ERRORCODE_UNSUPPORTED; }
    virtual GGPOErrorCode CurrentFrame(int& current) override;
-   virtual GGPOErrorCode PollNetwork() override;
-   virtual GGPOErrorCode SetManualNetworkPolling(bool value) override;
-
-public:
-   virtual void OnMsg(sockaddr_in &from, UdpMsg *msg, int len);
+   virtual GGPOErrorCode OnPacket(ENetPeer* peer, const ENetPacket* pkt) override;
 
 protected:
    void PollUdpProtocolEvents(void);
@@ -50,15 +44,12 @@ protected:
 
 protected:
    GGPOSessionCallbacks  _callbacks;
-   Poll                  _poll;
-   Udp                   _udp;
    UdpProtocol           _host;
    bool                  _synchronizing;
    int                   _input_size;
    int                   _num_players;
    int                   _next_input_to_send;
    GameInput             _inputs[SPECTATOR_FRAME_BUFFER_SIZE];
-   bool                  _manual_network_polling;
 };
 
 #endif

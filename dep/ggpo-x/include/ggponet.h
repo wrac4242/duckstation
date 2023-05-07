@@ -8,6 +8,8 @@
 #ifndef _GGPONET_H_
 #define _GGPONET_H_
 
+#include "enet/enet.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -78,8 +80,7 @@ typedef struct GGPOPlayer {
       struct {
       } local;
       struct {
-         char           ip_address[32];
-         unsigned short port;
+        ENetPeer* peer;
       } remote;
    } u;
 } GGPOPlayer;
@@ -153,8 +154,7 @@ typedef enum {
    GGPO_EVENTCODE_TIMESYNC                     = 1005,
    GGPO_EVENTCODE_CONNECTION_INTERRUPTED       = 1006,
    GGPO_EVENTCODE_CONNECTION_RESUMED           = 1007,
-   GGPO_EVENTCODE_CHAT                         = 1008,
-   GGPO_EVENTCODE_DESYNC                       = 1009
+   GGPO_EVENTCODE_DESYNC                       = 1008
 } GGPOEventCode;
 
 /*
@@ -190,10 +190,6 @@ typedef struct {
       struct {
          GGPOPlayerHandle  player;
       } connection_resumed;
-      struct {
-          int senderID;
-          const char* msg;
-      } chat;
       struct {
           int nFrameOfDesync;
           uint32_t ourCheckSum;
@@ -481,25 +477,6 @@ GGPO_API GGPOErrorCode __cdecl ggpo_add_local_input(GGPOSession *,
                                                     void *values,
                                                     int size);
 /*
- * ggpo_add_local_input --
- *
- * Used to notify GGPO.net of inputs that should be trasmitted to remote
- * players.  ggpo_add_local_input must be called once every frame for
- * all player of type GGPO_PLAYERTYPE_LOCAL.
- *
- * player - The player handle returned for this player when you called
- * ggpo_add_local_player.
- *
- * values - The controller inputs for this player.
- *
- * size - The size of the controller inputs.  This must be exactly equal to the
- * size passed into ggpo_start_session.
- */
-
-GGPO_API GGPOErrorCode __cdecl ggpo_client_chat(GGPOSession *,
-                                                  const char* message);
-
-/*
  * ggpo_synchronize_input --
  *
  * You should call ggpo_synchronize_input before every frame of execution,
@@ -575,15 +552,6 @@ GGPO_API GGPOErrorCode __cdecl ggpo_get_network_stats(GGPOSession *,
 GGPO_API GGPOErrorCode __cdecl ggpo_set_disconnect_timeout(GGPOSession *,
                                                            int timeout);
 /*
- * ggpo_enable_manual_network_polling --
- *
- * disables polling done by ggpo and it's expected that ggpo_poll_network will be used instead.  
- *
- */
-
-GGPO_API GGPOErrorCode __cdecl ggpo_set_manual_network_polling(GGPOSession*,
-                                                               bool value);
-  /*
  * ggpo_set_disconnect_notify_start --
  *
  * The time to wait before the first GGPO_EVENTCODE_NETWORK_INTERRUPTED timeout
@@ -594,14 +562,12 @@ GGPO_API GGPOErrorCode __cdecl ggpo_set_manual_network_polling(GGPOSession*,
  */
 GGPO_API GGPOErrorCode __cdecl ggpo_set_disconnect_notify_start(GGPOSession *,
                                                                int timeout);
-/*
-* ggpo_poll_network --
-* 
-* polls the network socket for any messages to be sent and recieved.
-* 
-*/
 
-GGPO_API GGPOErrorCode __cdecl ggpo_poll_network(GGPOSession*);
+/*
+ * ENet packet processing
+ */
+GGPO_API GGPOErrorCode __cdecl ggpo_handle_packet(GGPOSession*,
+  ENetPeer* peer, const ENetPacket* pkt);
 
 /*
  * ggpo_log --

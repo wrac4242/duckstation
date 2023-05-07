@@ -11,8 +11,14 @@ enum : s32
   MAX_PLAYERS = 2, 
   // Maximum netplay prediction frames
   MAX_ROLLBACK_FRAMES = 8,
+};
 
-  NUM_ENET_CHANNELS = 1,
+enum : u8
+{
+  ENET_CHANNEL_CONTROL = 0,
+  ENET_CHANNEL_GGPO = 1,
+
+  NUM_ENET_CHANNELS,
 };
 
 void StartNetplaySession(s32 local_handle, u16 local_port, std::string& remote_addr, u16 remote_port, s32 input_delay,

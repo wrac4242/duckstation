@@ -41,6 +41,7 @@ static bool NpBeginGameCb(void* ctx, const char* game_name);
 static void NpFreeBuffCb(void* ctx, void* buffer, int frame);
 static bool NpOnEventCb(void* ctx, GGPOEvent* ev);
 
+static GGPOPlayerHandle PlayerIdToGGPOHandle(s32 player_id);
 static Input ReadLocalInput();
 static GGPOErrorCode AddLocalInput(Netplay::Input input);
 static GGPOErrorCode SyncInput(Input inputs[2], int* disconnect_flags);
@@ -58,6 +59,7 @@ static bool ConnectToLowerPeers(gsl::span<const ENetAddress> peer_addresses);
 static bool WaitForPeerConnections();
 static void HandleEnetEvent(const ENetEvent* event);
 static void PollEnet(Common::Timer::Value until_time);
+static void HandleControlPacket(s32 player_id, const ENetPacket* pkt);
 
 // l = local, r = remote
 static s32 Start(s32 lhandle, u16 lport, const std::string& raddr, u16 rport, s32 ldelay, u32 pred, std::string game_path);
@@ -154,6 +156,11 @@ void Netplay::ShutdownEnetHost()
   s_enet_host = nullptr;
 }
 
+GGPOPlayerHandle PlayerIdToGGPOHandle(s32 player_id)
+{
+  return player_id + 1;
+}
+
 s32 Netplay::GetPlayerIdForPeer(const ENetPeer* peer)
 {
   for (s32 i = 0; i < MAX_PLAYERS; i++)
@@ -212,6 +219,33 @@ void Netplay::HandleEnetEvent(const ENetEvent* event)
       s_enet_peers[player_id] = nullptr;
     }
     break;
+
+    case ENET_EVENT_TYPE_RECEIVE:
+      {
+        const s32 player_id = GetPlayerIdForPeer(event->peer);
+        if (player_id < 0)
+        {
+          Log_WarningPrintf("Received packet from unknown player");
+          return;
+        }
+
+        if (event->channelID == ENET_CHANNEL_CONTROL)
+        {
+          HandleControlPacket(player_id, event->packet);
+        }
+        else if (event->channelID == ENET_CHANNEL_GGPO)
+        {
+          Log_TracePrintf("Received %zu ggpo bytes from player %d", event->packet->dataLength, player_id);
+          const int rc = ggpo_handle_packet(s_ggpo, event->peer, event->packet);
+          if (rc != GGPO_OK)
+            Log_ErrorPrintf("Failed to process GGPO packet!");
+        }
+        else
+        {
+          Log_ErrorPrintf("Unexpected packet channel %u", event->channelID);
+        }
+      }
+      break;
 
     default:
     {
@@ -307,6 +341,12 @@ bool Netplay::WaitForPeerConnections()
   return true;
 }
 
+void Netplay::HandleControlPacket(s32 player_id, const ENetPacket* pkt)
+{
+  // TODO
+  Log_ErrorPrintf("Unhandled control packet from player %d of size %zu", player_id, pkt->dataLength);
+}
+
 s32 Netplay::Start(s32 lhandle, u16 lport, const std::string& raddr, u16 rport, s32 ldelay, u32 pred, std::string game_path)
 {
   SetSettings();
@@ -358,7 +398,7 @@ s32 Netplay::Start(s32 lhandle, u16 lport, const std::string& raddr, u16 rport, 
        !ConnectToLowerPeers(gsl::span<const ENetAddress>(peer_addresses).subspan(0, num_peer_addresses))) ||
       !WaitForPeerConnections())
   {
-    ShutdownEnetHost();
+    // System shutdown cleans up enet.
     return -1;
   }
 
@@ -377,37 +417,51 @@ s32 Netplay::Start(s32 lhandle, u16 lport, const std::string& raddr, u16 rport, 
 
   GGPOErrorCode result;
 
-  result =
-    ggpo_start_session(&s_ggpo, &cb, "Duckstation-Netplay", 2, sizeof(Netplay::Input), lport, MAX_ROLLBACK_FRAMES);
-  // result = ggpo_start_synctest(&s_ggpo, &cb, (char*)"asdf", 2, sizeof(Netplay::Input), 1);
+  result = ggpo_start_session(&s_ggpo, &cb, "Duckstation-Netplay", MAX_PLAYERS, sizeof(Netplay::Input), lport, MAX_ROLLBACK_FRAMES);
+  if (!GGPO_SUCCEEDED(result))
+  {
+    Log_ErrorPrintf("ggpo_start_session() failed: %d", result);
+    return -1;
+  }
 
   ggpo_set_disconnect_timeout(s_ggpo, 2000);
   ggpo_set_disconnect_notify_start(s_ggpo, 1000);
 
-  for (int i = 1; i <= 2; i++)
+  for (s32 i = 0; i < MAX_PLAYERS; i++)
   {
-    GGPOPlayer player = {};
-    GGPOPlayerHandle handle = 0;
+    if (!s_enet_peers[i] && i != s_player_id)
+      continue;
 
-    player.size = sizeof(GGPOPlayer);
-    player.player_num = i;
+    // This is *awful*. Need to merge the player IDs, enough of this indices-start-at-1 rubbish.
+    const GGPOPlayerHandle expected_handle = PlayerIdToGGPOHandle(i);
 
-    if (lhandle == i)
+    GGPOPlayer player = { sizeof(GGPOPlayer) };
+    GGPOPlayerHandle got_handle;
+    player.player_num = expected_handle;
+    if (i == s_player_id)
     {
-      player.type = GGPOPlayerType::GGPO_PLAYERTYPE_LOCAL;
-      result = ggpo_add_player(s_ggpo, &player, &handle);
-      s_local_handle = handle;
+      player.type = GGPO_PLAYERTYPE_LOCAL;
+      result = ggpo_add_player(s_ggpo, &player, &got_handle);
+      if (GGPO_SUCCEEDED(result))
+        s_local_handle = got_handle;
     }
     else
     {
-      player.type = GGPOPlayerType::GGPO_PLAYERTYPE_REMOTE;
-      StringUtil::Strlcpy(player.u.remote.ip_address, raddr.c_str(), std::size(player.u.remote.ip_address));
-      player.u.remote.port = rport;
-      result = ggpo_add_player(s_ggpo, &player, &handle);
+      player.type = GGPO_PLAYERTYPE_REMOTE;
+      player.u.remote.peer = s_enet_peers[i];
+      result = ggpo_add_player(s_ggpo, &player, &got_handle);
     }
+
+    if (!GGPO_SUCCEEDED(result))
+    {
+      Log_ErrorPrintf("Failed to add player %d", i);
+      return -1;
+    }
+
+    Assert(expected_handle == got_handle);
   }
+
   ggpo_set_frame_delay(s_ggpo, s_local_handle, ldelay);
-  ggpo_set_manual_network_polling(s_ggpo, true);
 
   return result;
 }
@@ -420,6 +474,8 @@ void Netplay::CloseSession()
   s_ggpo = nullptr;
   s_save_buffer_pool.clear();
   s_local_handle = GGPO_INVALID_HANDLE;
+
+  ShutdownEnetHost();
 
   // Restore original settings.
   Host::Internal::SetNetplaySettingsLayer(nullptr);
@@ -527,9 +583,6 @@ void Netplay::Throttle()
   const Common::Timer::Value sleep_period = Common::Timer::ConvertMillisecondsToValue(1);
   for (;;)
   {
-    // Poll network.
-    ggpo_poll_network(s_ggpo);
-
     // TODO: make better, we can tell this function to stall until the next frame
     PollEnet(0);
 
@@ -630,6 +683,11 @@ void Netplay::CollectInput(u32 slot, u32 bind, float value)
   s_net_input[slot][bind] = value;
 }
 
+GGPOPlayerHandle Netplay::PlayerIdToGGPOHandle(s32 player_id)
+{
+  return player_id + 1;
+}
+
 Netplay::Input Netplay::ReadLocalInput()
 {
   // get controller data of the first controller (0 internally)
@@ -644,7 +702,6 @@ Netplay::Input Netplay::ReadLocalInput()
 
 void Netplay::SendMsg(const char* msg)
 {
-  ggpo_client_chat(s_ggpo, msg);
 }
 
 GGPOErrorCode Netplay::SyncInput(Netplay::Input inputs[2], int* disconnect_flags)
@@ -829,9 +886,6 @@ bool Netplay::NpOnEventCb(void* ctx, GGPOEvent* ev)
       break;
     case GGPOEventCode::GGPO_EVENTCODE_CONNECTION_RESUMED:
       Host::OnNetplayMessage(fmt::format("Netplay Player: {} Connection Resumed", ev->u.connection_resumed.player));
-      break;
-    case GGPOEventCode::GGPO_EVENTCODE_CHAT:
-      Host::OnNetplayMessage(ev->u.chat.msg);
       break;
     case GGPOEventCode::GGPO_EVENTCODE_TIMESYNC:
       HandleTimeSyncEvent(ev->u.timesync.frames_ahead, ev->u.timesync.timeSyncPeriodInFrames);
