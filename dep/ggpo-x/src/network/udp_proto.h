@@ -37,9 +37,6 @@ public:
          Synchronizing,
          Synchronzied,
          Input,
-         Disconnected,
-         NetworkInterrupted,
-         NetworkResumed,
       };
 
       Type      type;
@@ -85,8 +82,6 @@ public:
    void SetLocalFrameNumber(int num);
    float RecommendFrameDelay();
    int RemoteFrameDelay()const;
-   void SetDisconnectTimeout(int timeout);
-   void SetDisconnectNotifyStart(int timeout);
    void SetFrameDelay(int delay);
    void ApplyToEvents(std::function<void(UdpProtocol::Event&)> cb);
    void StartPollLoop();
@@ -124,7 +119,6 @@ protected:
    bool OnInputAck(UdpMsg *msg, int len);
    bool OnQualityReport(UdpMsg *msg, int len);
    bool OnQualityReply(UdpMsg *msg, int len);
-   bool OnKeepAlive(UdpMsg *msg, int len);
   
 protected:
    /*
@@ -179,11 +173,6 @@ protected:
    GameInput                  _last_acked_input;
    unsigned int               _last_send_time;
    unsigned int               _last_recv_time;
-   unsigned int               _shutdown_timeout;
-   unsigned int               _disconnect_event_sent;
-   unsigned int               _disconnect_timeout;
-   unsigned int               _disconnect_notify_start;
-   bool                       _disconnect_notify_sent;
 
    uint16                     _next_send_seq;
    uint16                     _next_recv_seq;

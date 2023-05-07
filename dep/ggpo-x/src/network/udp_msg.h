@@ -21,8 +21,7 @@ struct UdpMsg
       Input         = 3,
       QualityReport = 4,
       QualityReply  = 5,
-      KeepAlive     = 6,
-      InputAck      = 7,
+      InputAck      = 6,
    };
 
    struct connect_status {
@@ -61,8 +60,7 @@ struct UdpMsg
 
          uint32            start_frame;
 
-         int               disconnect_requested:1;
-         int               ack_frame:31;
+         int               ack_frame;
 
          uint16            num_bits;
          uint32            checksum32;
@@ -71,7 +69,7 @@ struct UdpMsg
       } input;
 
       struct {
-         int               ack_frame:31;
+         int               ack_frame;
       } input_ack;
    } u;
 
@@ -89,7 +87,6 @@ public:
       case QualityReport: return sizeof(u.quality_report);
       case QualityReply:  return sizeof(u.quality_reply);
       case InputAck:      return sizeof(u.input_ack);
-      case KeepAlive:     return 0;
       case Input:
          size = (int)((char *)&u.input.bits - (char *)&u.input);
          size += (u.input.num_bits + 7) / 8;

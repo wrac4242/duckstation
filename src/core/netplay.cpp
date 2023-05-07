@@ -215,7 +215,10 @@ void Netplay::HandleEnetEvent(const ENetEvent* event)
       if (player_id < 0)
         return;
 
+      // TODO: This one's gonna get kinda tricky... who do we orphan when they disconnect?
       Log_WarningPrintf("ENet player %d disconnected", player_id);
+      Host::OnNetplayMessage(fmt::format("*** DISCONNECTED PLAYER {} ***", player_id));
+      ggpo_disconnect_player(s_ggpo, PlayerIdToGGPOHandle(player_id));
       s_enet_peers[player_id] = nullptr;
     }
     break;
@@ -355,7 +358,7 @@ s32 Netplay::Start(s32 lhandle, u16 lport, const std::string& raddr, u16 rport, 
 
   ENetAddress host_address;
   host_address.host = ENET_HOST_ANY;
-  host_address.port = lport - 10;
+  host_address.port = lport;
   s_enet_host = enet_host_create(&host_address, MAX_PLAYERS - 1, NUM_ENET_CHANNELS, 0, 0);
   if (!s_enet_host)
   {
@@ -381,7 +384,7 @@ s32 Netplay::Start(s32 lhandle, u16 lport, const std::string& raddr, u16 rport, 
       return -1;
     }
 
-    peer_addresses[other_player_id].port = rport - 10;
+    peer_addresses[other_player_id].port = rport;
   }
 
   // Create system.
@@ -874,18 +877,8 @@ bool Netplay::NpOnEventCb(void* ctx, GGPOEvent* ev)
     case GGPOEventCode::GGPO_EVENTCODE_SYNCHRONIZED_WITH_PEER:
       Host::OnNetplayMessage(fmt::format("Netplay Synchronized With Player: {}", ev->u.synchronized.player));
       break;
-    case GGPOEventCode::GGPO_EVENTCODE_DISCONNECTED_FROM_PEER:
-      Host::OnNetplayMessage(fmt::format("Netplay Player: %d Disconnected", ev->u.disconnected.player));
-      break;
     case GGPOEventCode::GGPO_EVENTCODE_RUNNING:
       Host::OnNetplayMessage("Netplay Is Running");
-      break;
-    case GGPOEventCode::GGPO_EVENTCODE_CONNECTION_INTERRUPTED:
-      Host::OnNetplayMessage(fmt::format("Netplay Player: {} Connection Interupted, Timeout: {}", ev->u.connection_interrupted.player,
-              ev->u.connection_interrupted.disconnect_timeout));
-      break;
-    case GGPOEventCode::GGPO_EVENTCODE_CONNECTION_RESUMED:
-      Host::OnNetplayMessage(fmt::format("Netplay Player: {} Connection Resumed", ev->u.connection_resumed.player));
       break;
     case GGPOEventCode::GGPO_EVENTCODE_TIMESYNC:
       HandleTimeSyncEvent(ev->u.timesync.frames_ahead, ev->u.timesync.timeSyncPeriodInFrames);

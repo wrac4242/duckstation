@@ -143,25 +143,6 @@ SpectatorBackend::OnUdpProtocolEvent(UdpProtocol::Event &evt)
       }
       break;
 
-   case UdpProtocol::Event::NetworkInterrupted:
-      info.code = GGPO_EVENTCODE_CONNECTION_INTERRUPTED;
-      info.u.connection_interrupted.player = 0;
-      info.u.connection_interrupted.disconnect_timeout = evt.u.network_interrupted.disconnect_timeout;
-      _callbacks.on_event(_callbacks.context, &info);
-      break;
-
-   case UdpProtocol::Event::NetworkResumed:
-      info.code = GGPO_EVENTCODE_CONNECTION_RESUMED;
-      info.u.connection_resumed.player = 0;
-      _callbacks.on_event(_callbacks.context, &info);
-      break;
-
-   case UdpProtocol::Event::Disconnected:
-      info.code = GGPO_EVENTCODE_DISCONNECTED_FROM_PEER;
-      info.u.disconnected.player = 0;
-      _callbacks.on_event(_callbacks.context, &info);
-      break;
-
    case UdpProtocol::Event::Input:
       GameInput& input = evt.u.input.input;
 

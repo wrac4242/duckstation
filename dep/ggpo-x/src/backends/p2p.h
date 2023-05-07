@@ -30,8 +30,6 @@ public:
    virtual GGPOErrorCode DisconnectPlayer(GGPOPlayerHandle handle) override;
    virtual GGPOErrorCode GetNetworkStats(GGPONetworkStats *stats, GGPOPlayerHandle handle) override;
    virtual GGPOErrorCode SetFrameDelay(GGPOPlayerHandle player, int delay) override;
-   virtual GGPOErrorCode SetDisconnectTimeout(int timeout) override;
-   virtual GGPOErrorCode SetDisconnectNotifyStart(int timeout) override;
    virtual GGPOErrorCode CurrentFrame(int& current) override;
    virtual GGPOErrorCode OnPacket(ENetPeer* peer, const ENetPacket* pkt) override;
 
@@ -65,8 +63,6 @@ protected:
    int                   _next_recommended_sleep;
 
    int                   _next_spectator_frame;
-   int                   _disconnect_timeout;
-   int                   _disconnect_notify_start;
 
    UdpMsg::connect_status _local_connect_status[UDP_MSG_MAX_PLAYERS];
    struct ChecksumEntry {

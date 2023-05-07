@@ -8,8 +8,6 @@
 #include "p2p.h"
 
 static const int RECOMMENDATION_INTERVAL           = 120;
-static const int DEFAULT_DISCONNECT_TIMEOUT        = 5000;
-static const int DEFAULT_DISCONNECT_NOTIFY_START   = 750;
 
 Peer2PeerBackend::Peer2PeerBackend(GGPOSessionCallbacks *cb,
                                    const char *gamename,
@@ -19,8 +17,6 @@ Peer2PeerBackend::Peer2PeerBackend(GGPOSessionCallbacks *cb,
     _num_players(num_players),
     _input_size(input_size),
     _sync(_local_connect_status, nframes),
-    _disconnect_timeout(DEFAULT_DISCONNECT_TIMEOUT),
-    _disconnect_notify_start(DEFAULT_DISCONNECT_NOTIFY_START),
     _num_spectators(0),
     _next_spectator_frame(0)
 {
@@ -63,8 +59,6 @@ Peer2PeerBackend::AddRemotePlayer(ENetPeer* peer, int queue)
    _synchronizing = true;
    
    _endpoints[queue].Init(peer, queue, _local_connect_status);
-   _endpoints[queue].SetDisconnectTimeout(_disconnect_timeout);
-   _endpoints[queue].SetDisconnectNotifyStart(_disconnect_notify_start);
    _endpoints[queue].Synchronize();
 }
 
@@ -82,8 +76,6 @@ GGPOErrorCode Peer2PeerBackend::AddSpectator(ENetPeer* peer)
    int queue = _num_spectators++;
 
    _spectators[queue].Init(peer, queue + 1000, _local_connect_status);
-   _spectators[queue].SetDisconnectTimeout(_disconnect_timeout);
-   _spectators[queue].SetDisconnectNotifyStart(_disconnect_notify_start);
    _spectators[queue].Synchronize();
 
    return GGPO_OK;
@@ -538,10 +530,6 @@ Peer2PeerBackend::OnUdpProtocolPeerEvent(UdpProtocol::Event &evt, int queue)
             }
          }
          break;
-
-   case UdpProtocol::Event::Disconnected:
-      DisconnectPlayer(QueueToPlayerHandle(queue));
-      break;
    }
 }
 
@@ -551,19 +539,6 @@ Peer2PeerBackend::OnUdpProtocolSpectatorEvent(UdpProtocol::Event &evt, int queue
 {
    GGPOPlayerHandle handle = QueueToSpectatorHandle(queue);
    OnUdpProtocolEvent(evt, handle);
-
-   GGPOEvent info;
-
-   switch (evt.type) {
-   case UdpProtocol::Event::Disconnected:
-      _spectators[queue].Disconnect();
-
-      info.code = GGPO_EVENTCODE_DISCONNECTED_FROM_PEER;
-      info.u.disconnected.player = handle;
-      _callbacks.on_event(_callbacks.context, &info);
-
-      break;
-   }
 }
 
 void
@@ -590,19 +565,6 @@ Peer2PeerBackend::OnUdpProtocolEvent(UdpProtocol::Event &evt, GGPOPlayerHandle h
       _callbacks.on_event(_callbacks.context, &info);
 
       CheckInitialSync();
-      break;
-
-   case UdpProtocol::Event::NetworkInterrupted:
-      info.code = GGPO_EVENTCODE_CONNECTION_INTERRUPTED;
-      info.u.connection_interrupted.player = handle;
-      info.u.connection_interrupted.disconnect_timeout = evt.u.network_interrupted.disconnect_timeout;
-      _callbacks.on_event(_callbacks.context, &info);
-      break;
-
-   case UdpProtocol::Event::NetworkResumed:
-      info.code = GGPO_EVENTCODE_CONNECTION_RESUMED;
-      info.u.connection_resumed.player = handle;
-      _callbacks.on_event(_callbacks.context, &info);
       break;
    }
 }
@@ -650,6 +612,7 @@ Peer2PeerBackend::DisconnectPlayerQueue(int queue, int syncto)
    GGPOEvent info;
    int framecount = _sync.GetFrameCount();
 
+   // TODO: Where does the endpoint actually get removed? I can't see it anywhere...
    _endpoints[queue].Disconnect();
 
    Log("Changing queue %d local connect status for last frame from %d to %d on disconnect request (current: %d).\n",
@@ -663,10 +626,6 @@ Peer2PeerBackend::DisconnectPlayerQueue(int queue, int syncto)
       _sync.AdjustSimulation(syncto);
       Log("finished adjusting simulation.\n");
    }*/
-
-   info.code = GGPO_EVENTCODE_DISCONNECTED_FROM_PEER;
-   info.u.disconnected.player = QueueToPlayerHandle(queue);
-   _callbacks.on_event(_callbacks.context, &info);
 
    CheckInitialSync();
 }
@@ -708,30 +667,6 @@ Peer2PeerBackend::SetFrameDelay(GGPOPlayerHandle player, int delay)
    }
    ;
    return GGPO_OK; 
-}
-
-GGPOErrorCode
-Peer2PeerBackend::SetDisconnectTimeout(int timeout)
-{
-   _disconnect_timeout = timeout;
-   for (int i = 0; i < _num_players; i++) {
-      if (_endpoints[i].IsInitialized()) {
-         _endpoints[i].SetDisconnectTimeout(_disconnect_timeout);
-      }
-   }
-   return GGPO_OK;
-}
-
-GGPOErrorCode
-Peer2PeerBackend::SetDisconnectNotifyStart(int timeout)
-{
-   _disconnect_notify_start = timeout;
-   for (int i = 0; i < _num_players; i++) {
-      if (_endpoints[i].IsInitialized()) {
-         _endpoints[i].SetDisconnectNotifyStart(_disconnect_notify_start);
-      }
-   }
-   return GGPO_OK;
 }
 
 GGPOErrorCode

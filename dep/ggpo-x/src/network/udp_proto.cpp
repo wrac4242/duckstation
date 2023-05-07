@@ -15,10 +15,8 @@ static const int NUM_SYNC_PACKETS = 5;
 static const int SYNC_RETRY_INTERVAL = 2000;
 static const int SYNC_FIRST_RETRY_INTERVAL = 500;
 static const int RUNNING_RETRY_INTERVAL = 200;
-static const int KEEP_ALIVE_INTERVAL    = 200;
 static const int QUALITY_REPORT_INTERVAL =  333;
 static const int NETWORK_STATS_INTERVAL  = 500;
-static const int UDP_SHUTDOWN_TIMER = 5000;
 static const int MAX_SEQ_DISTANCE = (1 << 15);
 
 static const uint8_t ENET_CHANNEL_ID = 1;
@@ -33,11 +31,6 @@ UdpProtocol::UdpProtocol() :
    _bytes_sent(0),
    _stats_start_time(0),
    _last_send_time(0),
-   _shutdown_timeout(0),
-   _disconnect_timeout(0),
-   _disconnect_notify_start(0),
-   _disconnect_notify_sent(false),
-   _disconnect_event_sent(false),
    _connected(false),
    _next_send_seq(0),
    _next_recv_seq(0),
@@ -143,7 +136,6 @@ UdpProtocol::SendPendingOutput()
    msg->u.input.ack_frame = _last_received_input.frame;
    msg->u.input.num_bits = (uint16)offset;
 
-   msg->u.input.disconnect_requested = _current_state == Disconnected;
    if (_local_connect_status) {
       memcpy(msg->u.input.peer_connect_status, _local_connect_status, sizeof(UdpMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
    } else {
@@ -235,38 +227,10 @@ UdpProtocol::OnLoopPoll()
          _state.running.last_network_stats_interval =  now;
       }
 
-      // TODO: needed with enet?
-      if (_last_send_time && _last_send_time + KEEP_ALIVE_INTERVAL < now) {
-         Log("Sending keep alive packet\n");
-         SendMsg(new UdpMsg(UdpMsg::KeepAlive));
-      }
-
-      // These can be dropped..
-      if (_disconnect_timeout && _disconnect_notify_start && 
-         !_disconnect_notify_sent && (_last_recv_time + _disconnect_notify_start < now)) {
-         Log("Endpoint has stopped receiving packets for %d ms.  Sending notification.\n", _disconnect_notify_start);
-         Event e(Event::NetworkInterrupted);
-         e.u.network_interrupted.disconnect_timeout = _disconnect_timeout - _disconnect_notify_start;
-         QueueEvent(e);
-         _disconnect_notify_sent = true;
-      }
-
-      if (_disconnect_timeout && (_last_recv_time + _disconnect_timeout < now)) {
-         if (!_disconnect_event_sent) {
-            Log("Endpoint has stopped receiving packets for %d ms.  Disconnecting.\n", _disconnect_timeout);
-            QueueEvent(Event(Event::Disconnected));
-            _disconnect_event_sent = true;
-         }
-      }
       break;
 
    case Disconnected:
-      if (_shutdown_timeout < now) {
-         Log("Shutting down udp connection.\n");
-         abort();
-         _peer = NULL;
-         _shutdown_timeout = 0;
-      }
+     break;
 
    }
 
@@ -278,7 +242,7 @@ void
 UdpProtocol::Disconnect()
 {
    _current_state = Disconnected;
-   _shutdown_timeout = Platform::GetCurrentTimeMS() + UDP_SHUTDOWN_TIMER;
+   _peer = nullptr;
 }
 
 void
@@ -323,7 +287,6 @@ UdpProtocol::OnMsg(UdpMsg *msg, int len)
       &UdpProtocol::OnInput,               /* Input */
       &UdpProtocol::OnQualityReport,       /* QualityReport */
       &UdpProtocol::OnQualityReply,        /* QualityReply */
-      &UdpProtocol::OnKeepAlive,           /* KeepAlive */
       &UdpProtocol::OnInputAck,            /* InputAck */
    };
 
@@ -354,10 +317,6 @@ UdpProtocol::OnMsg(UdpMsg *msg, int len)
    }
    if (handled) {
       _last_recv_time = Platform::GetCurrentTimeMS();
-      if (_disconnect_notify_sent && _current_state == Running) {
-         QueueEvent(Event(Event::NetworkResumed));   
-         _disconnect_notify_sent = false;
-      }
    }
 }
 
@@ -445,9 +404,6 @@ UdpProtocol::LogMsg(const char *prefix, UdpMsg *msg)
    case UdpMsg::QualityReply:
       Log("%s quality reply.\n", prefix);
       break;
-   case UdpMsg::KeepAlive:
-      Log("%s keep alive.\n", prefix);
-      break;
    case UdpMsg::Input:
       Log("%s game-compressed-input %d (+ %d bits).\n", prefix, msg->u.input.start_frame, msg->u.input.num_bits);
       break;
@@ -531,28 +487,16 @@ UdpProtocol::OnSyncReply(UdpMsg *msg, int len)
 bool
 UdpProtocol::OnInput(UdpMsg *msg, int len)
 {
-   /*
-    * If a disconnect is requested, go ahead and disconnect now.
-    */
-   bool disconnect_requested = msg->u.input.disconnect_requested;
-   if (disconnect_requested) {
-      if (_current_state != Disconnected && !_disconnect_event_sent) {
-         Log("Disconnecting endpoint on remote request.\n");
-         QueueEvent(Event(Event::Disconnected));
-         _disconnect_event_sent = true;
-      }
-   } else {
-      /*
-       * Update the peer connection status if this peer is still considered to be part
-       * of the network.
-       */
-      UdpMsg::connect_status* remote_status = msg->u.input.peer_connect_status;
-      for (int i = 0; i < ARRAY_SIZE(_peer_connect_status); i++) {
-         ASSERT(remote_status[i].last_frame >= _peer_connect_status[i].last_frame);
-         _peer_connect_status[i].disconnected = _peer_connect_status[i].disconnected || remote_status[i].disconnected;
-         _peer_connect_status[i].last_frame = MAX(_peer_connect_status[i].last_frame, remote_status[i].last_frame);
-      }
-   }
+    /*
+      * Update the peer connection status if this peer is still considered to be part
+      * of the network.
+      */
+    UdpMsg::connect_status* remote_status = msg->u.input.peer_connect_status;
+    for (int i = 0; i < ARRAY_SIZE(_peer_connect_status); i++) {
+        ASSERT(remote_status[i].last_frame >= _peer_connect_status[i].last_frame);
+        _peer_connect_status[i].disconnected = _peer_connect_status[i].disconnected || remote_status[i].disconnected;
+        _peer_connect_status[i].last_frame = MAX(_peer_connect_status[i].last_frame, remote_status[i].last_frame);
+    }
 
    /*
     * Decompress the input.
@@ -673,12 +617,6 @@ UdpProtocol::OnQualityReply(UdpMsg *msg, int len)
    return true;
 }
 
-bool
-UdpProtocol::OnKeepAlive(UdpMsg *msg, int len)
-{
-   return true;
-}
-
 void
 UdpProtocol::GetNetworkStats(struct GGPONetworkStats *s)
 {
@@ -715,17 +653,4 @@ UdpProtocol::RecommendFrameDelay()
 {
    // XXX: require idle input should be a configuration parameter
    return _timesync.recommend_frame_wait_duration(false);
-}
-
-
-void
-UdpProtocol::SetDisconnectTimeout(int timeout)
-{
-   _disconnect_timeout = timeout;
-}
-
-void
-UdpProtocol::SetDisconnectNotifyStart(int timeout)
-{
-   _disconnect_notify_start = timeout;
 }
