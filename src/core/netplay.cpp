@@ -588,6 +588,8 @@ void Netplay::Throttle()
   {
     // TODO: make better, we can tell this function to stall until the next frame
     PollEnet(0);
+    ggpo_network_idle(s_ggpo);
+    PollEnet(0);
 
     current_time = Common::Timer::GetCurrentValue();
     if (current_time >= s_next_frame_time)
@@ -650,7 +652,12 @@ void Netplay::AdvanceFrame()
 void Netplay::RunFrame()
 {
   // housekeeping
+  // TODO: get rid of double polling
+  PollEnet(0);
+  ggpo_network_idle(s_ggpo);
+  PollEnet(0);
   ggpo_idle(s_ggpo);
+
   // run game
   auto result = GGPO_OK;
   int disconnect_flags = 0;

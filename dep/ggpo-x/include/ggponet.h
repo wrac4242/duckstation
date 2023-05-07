@@ -453,6 +453,7 @@ GGPO_API GGPOErrorCode __cdecl ggpo_set_frame_delay(GGPOSession *,
  * in ggpo_idle.
  */
 GGPO_API GGPOErrorCode __cdecl ggpo_idle(GGPOSession *);
+GGPO_API GGPOErrorCode __cdecl ggpo_network_idle(GGPOSession *);
 
 /*
  * ggpo_add_local_input --

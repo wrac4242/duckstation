@@ -140,9 +140,6 @@ Peer2PeerBackend::DoPoll()
 {
    if (!_sync.InRollback())
    {
-     for (UdpProtocol& udp : _endpoints)
-       udp.OnLoopPoll();
-
       PollUdpProtocolEvents();
       CheckDesync();
       if (!_synchronizing) {
@@ -202,6 +199,14 @@ Peer2PeerBackend::DoPoll()
          }
       }
    }
+   return GGPO_OK;
+}
+
+GGPOErrorCode Peer2PeerBackend::NetworkIdle()
+{
+   for (UdpProtocol& udp : _endpoints)
+      udp.NetworkIdle();
+
    return GGPO_OK;
 }
 

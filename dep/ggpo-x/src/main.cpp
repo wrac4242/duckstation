@@ -101,6 +101,15 @@ ggpo_idle(GGPOSession *ggpo)
 }
 
 GGPOErrorCode
+ggpo_network_idle(GGPOSession* ggpo)
+{
+  if (!ggpo) {
+    return GGPO_ERRORCODE_INVALID_SESSION;
+  }
+  return ggpo->NetworkIdle();
+}
+
+GGPOErrorCode
 ggpo_add_local_input(GGPOSession *ggpo,
                      GGPOPlayerHandle player,
                      void *values,

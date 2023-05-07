@@ -15,6 +15,7 @@ class GGPOSession {
 public:
    virtual ~GGPOSession() { }
    virtual GGPOErrorCode DoPoll() = 0;
+   virtual GGPOErrorCode NetworkIdle() = 0;
    virtual GGPOErrorCode AddPlayer(GGPOPlayer *player, GGPOPlayerHandle *handle) = 0;
    virtual GGPOErrorCode AddLocalInput(GGPOPlayerHandle player, void *values, int size) = 0;
    virtual GGPOErrorCode SyncInput(void *values, int size, int *disconnect_flags) = 0;

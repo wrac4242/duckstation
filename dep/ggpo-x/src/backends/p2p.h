@@ -23,6 +23,7 @@ public:
 
 public:
    virtual GGPOErrorCode DoPoll() override;
+   virtual GGPOErrorCode NetworkIdle() override;
    virtual GGPOErrorCode AddPlayer(GGPOPlayer *player, GGPOPlayerHandle *handle) override;
    virtual GGPOErrorCode AddLocalInput(GGPOPlayerHandle player, void *values, int size) override;
    virtual GGPOErrorCode SyncInput(void *values, int size, int *disconnect_flags) override;

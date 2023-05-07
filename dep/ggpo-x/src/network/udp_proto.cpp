@@ -186,7 +186,7 @@ void UdpProtocol::EndPollLoop()
 }
 
 bool
-UdpProtocol::OnLoopPoll()
+UdpProtocol::NetworkIdle()
 {
    if (!_peer) {
       return true;

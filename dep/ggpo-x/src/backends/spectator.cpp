@@ -55,6 +55,12 @@ SpectatorBackend::DoPoll()
    return GGPO_OK;
 }
 
+GGPOErrorCode SpectatorBackend::NetworkIdle()
+{
+  _host.NetworkIdle();
+  return GGPO_OK;
+}
+
 GGPOErrorCode
 SpectatorBackend::SyncInput(void *values,
                             int size,

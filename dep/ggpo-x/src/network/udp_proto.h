@@ -57,7 +57,7 @@ public:
    };
 
 public:
-   bool OnLoopPoll();
+   bool NetworkIdle();
 
 public:
    UdpProtocol();
