@@ -969,7 +969,7 @@ void CodeGenerator::BlockPrologue()
 
   EmitStoreCPUStructField(offsetof(State, exception_raised), Value::FromConstantU8(0));
 
-#if 0
+#if 1
   EmitFunctionCall(nullptr, &Thunks::LogPC, Value::FromConstantU32(m_pc));
 #endif
 

@@ -2657,6 +2657,8 @@ void CodeGenerator::EmitCancelInterpreterLoadDelayForReg(Reg reg)
 
 void CodeGenerator::EmitICacheCheckAndUpdate()
 {
+  // TODO: reenable me
+  return;
   if (GetSegmentForAddress(m_pc) >= Segment::KSEG1)
   {
     m_emit->add(m_emit->dword[GetCPUPtrReg() + offsetof(State, pending_ticks)],

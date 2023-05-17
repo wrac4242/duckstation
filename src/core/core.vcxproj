@@ -12,6 +12,9 @@
     <ClCompile Include="cpu_core.cpp" />
     <ClCompile Include="cpu_disasm.cpp" />
     <ClCompile Include="cpu_code_cache.cpp" />
+    <ClCompile Include="cpu_newrec.cpp" />
+    <ClCompile Include="cpu_newrec_compiler.cpp" />
+    <ClCompile Include="cpu_newrec_compiler_x64.cpp" />
     <ClCompile Include="cpu_recompiler_code_generator.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
@@ -91,6 +94,10 @@
     <ClInclude Include="cpu_core_private.h" />
     <ClInclude Include="cpu_disasm.h" />
     <ClInclude Include="cpu_code_cache.h" />
+    <ClInclude Include="cpu_newrec.h" />
+    <ClInclude Include="cpu_newrec_compiler.h" />
+    <ClInclude Include="cpu_newrec_compiler_x64.h" />
+    <ClInclude Include="cpu_newrec_private.h" />
     <ClInclude Include="cpu_recompiler_code_generator.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClInclude>
@@ -164,6 +171,8 @@
   <Import Project="core.props" />
   <ItemDefinitionGroup>
     <ClCompile>
+      <PreprocessorDefinitions>ZYDIS_DISABLE_ENCODER;ZYDIS_DISABLE_AVX512;ZYDIS_DISABLE_KNC;ZYDIS_STATIC_BUILD;ZYCORE_STATIC_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories Condition="'$(Platform)'=='x64'">$(SolutionDir)dep\zydis\include;$(SolutionDir)dep\zydis\dependencies\zycore\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ObjectFileName>$(IntDir)/%(RelativeDir)/</ObjectFileName>
     </ClCompile>
   </ItemDefinitionGroup>

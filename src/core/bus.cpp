@@ -21,6 +21,7 @@
 #include "sio.h"
 #include "spu.h"
 #include "timers.h"
+#include "timing_event.h"
 #include "util/state_wrapper.h"
 #include <cstdio>
 #include <tuple>
@@ -1541,9 +1542,19 @@ ALWAYS_INLINE static TickCount DoScratchpadAccess(PhysicalMemoryAddress address,
 }
 
 template<MemoryAccessType type, MemoryAccessSize size>
-static ALWAYS_INLINE TickCount DoMemoryAccess(VirtualMemoryAddress address, u32& value)
+static ALWAYS_INLINE_RELEASE TickCount DoMemoryAccess(VirtualMemoryAddress address, u32& value)
 {
   using namespace Bus;
+
+#if 0
+  if (type == MemoryAccessType::Write && address == 0x80113028)
+  {
+    if ((TimingEvents::GetGlobalTickCounter() + CPU::g_state.pending_ticks) == 5051485)
+      __debugbreak();
+
+    Log_WarningPrintf("VAL %08X @ %u", value, (TimingEvents::GetGlobalTickCounter() + CPU::g_state.pending_ticks));
+  }
+#endif
 
   switch (address >> 29)
   {

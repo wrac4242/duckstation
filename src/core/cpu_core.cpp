@@ -9,6 +9,7 @@
 #include "common/log.h"
 #include "cpu_core_private.h"
 #include "cpu_disasm.h"
+#include "cpu_newrec.h"
 #include "cpu_recompiler_thunks.h"
 #include "gte.h"
 #include "host.h"
@@ -137,6 +138,7 @@ void Reset()
 
   GTE::Reset();
 
+  // TODO: This consumes cycles...
   SetPC(RESET_VECTOR);
 }
 
@@ -2102,6 +2104,10 @@ void Execute()
 
     case CPUExecutionMode::CachedInterpreter:
       CodeCache::Execute();
+      break;
+
+    case CPUExecutionMode::NewRec:
+      NewRec::Execute();
       break;
 
     case CPUExecutionMode::Interpreter:

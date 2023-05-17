@@ -11,6 +11,7 @@
 #include "settings.h"
 #include "system.h"
 #include "timing_event.h"
+#include "cpu_newrec_compiler_x64.h"
 Log_SetChannel(CPU::CodeCache);
 
 #ifdef WITH_RECOMPILER
@@ -263,6 +264,8 @@ void Initialize()
     ResetFastMap();
   }
 #endif
+
+  CPU::NewRec::Initialize();
 }
 
 void ClearState()
@@ -496,6 +499,15 @@ void Flush()
 
 void LogCurrentState()
 {
+#if 0
+  if ((TimingEvents::GetGlobalTickCounter() + GetPendingTicks()) == 8070051)
+    __debugbreak();
+#endif
+#if 0
+  if ((TimingEvents::GetGlobalTickCounter() + GetPendingTicks()) < 7856811)
+    return;
+#endif
+  
   const auto& regs = g_state.regs;
   WriteToExecutionLog("tick=%u pc=%08X zero=%08X at=%08X v0=%08X v1=%08X a0=%08X a1=%08X a2=%08X a3=%08X t0=%08X "
                       "t1=%08X t2=%08X t3=%08X t4=%08X t5=%08X t6=%08X t7=%08X s0=%08X s1=%08X s2=%08X s3=%08X s4=%08X "
@@ -541,6 +553,9 @@ CodeBlock* LookupBlock(CodeBlockKey key, bool allow_flush)
     else
       return nullptr;
   }
+
+  //NewRec::X64Compiler nrc;
+  //nrc.CompileBlock(key.GetPC());
 
   CodeBlock* block = new CodeBlock(key);
   block->recompile_frame_number = System::GetFrameNumber();
@@ -880,6 +895,8 @@ void InvalidateBlocksWithPageIndex(u32 page_index)
   auto& blocks = m_ram_block_map[page_index];
   for (CodeBlock* block : blocks)
     InvalidateBlock(block, true);
+
+  NewRec::InvalidateBlocksWithPageNumber(page_index);
 
   // Block will be re-added next execution.
   blocks.clear();
@@ -1234,7 +1251,7 @@ void CPU::Recompiler::Thunks::ResolveBranch(CodeBlock* block, void* host_pc, voi
 
 void CPU::Recompiler::Thunks::LogPC(u32 pc)
 {
-#if 0
+#if 1
   CPU::CodeCache::LogCurrentState();
 #endif
 #if 0

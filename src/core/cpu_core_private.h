@@ -91,7 +91,7 @@ ALWAYS_INLINE Segment GetSegmentForAddress(VirtualMemoryAddress address)
   }
 }
 
-ALWAYS_INLINE PhysicalMemoryAddress VirtualAddressToPhysical(VirtualMemoryAddress address)
+ALWAYS_INLINE constexpr PhysicalMemoryAddress VirtualAddressToPhysical(VirtualMemoryAddress address)
 {
   return (address & PHYSICAL_MEMORY_ADDRESS_MASK);
 }
