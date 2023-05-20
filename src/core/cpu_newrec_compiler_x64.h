@@ -93,6 +93,10 @@ protected:
   void Compile_Store(CompileFlags cf, MemoryAccessSize size,
                      const std::optional<VirtualMemoryAddress>& address) override;
 
+  void TestInterrupts(const Xbyak::Reg32& sr);
+  void Compile_mtc0(CompileFlags cf) override;
+  void Compile_rfe(CompileFlags cf) override;
+
 private:
   static void CompileThunk(u32 start_pc);
 

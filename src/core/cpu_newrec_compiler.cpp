@@ -769,34 +769,34 @@ void CPU::NewRec::Compiler::CompileInstruction()
     {
       switch (inst->r.funct)
       {
-      case InstructionFunct::sll: CompileTemplate(&Compiler::Compile_sll_const, &Compiler::Compile_sll, TF_WRITES_D | TF_READS_T); break;
-      case InstructionFunct::srl: CompileTemplate(&Compiler::Compile_srl_const, &Compiler::Compile_srl, TF_WRITES_D | TF_READS_T); break;
-      case InstructionFunct::sra: CompileTemplate(&Compiler::Compile_sra_const, &Compiler::Compile_sra, TF_WRITES_D | TF_READS_T); break;
-      case InstructionFunct::sllv: CompileTemplate(&Compiler::Compile_sllv_const, &Compiler::Compile_sllv, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
-      case InstructionFunct::srlv: CompileTemplate(&Compiler::Compile_srlv_const, &Compiler::Compile_srlv, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
-      case InstructionFunct::srav: CompileTemplate(&Compiler::Compile_srav_const, &Compiler::Compile_srav, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
-      case InstructionFunct::jr: CompileTemplate(&Compiler::Compile_jr_const, &Compiler::Compile_jr, TF_READS_S); break;
-      case InstructionFunct::jalr: CompileTemplate(&Compiler::Compile_jalr_const, &Compiler::Compile_jalr, /*TF_WRITES_D |*/ TF_READS_S | TF_NO_NOP); break;
-      case InstructionFunct::syscall: Compile_syscall(); break;
-      case InstructionFunct::break_: Compile_break(); break;
-      case InstructionFunct::mfhi: CompileMoveRegTemplate(inst->r.rd, Reg::hi); break;
-      case InstructionFunct::mthi: CompileMoveRegTemplate(Reg::hi, inst->r.rs); break;
-      case InstructionFunct::mflo: CompileMoveRegTemplate(inst->r.rd, Reg::lo); break;
-      case InstructionFunct::mtlo: CompileMoveRegTemplate(Reg::lo, inst->r.rs); break;
-      case InstructionFunct::mult: CompileTemplate(&Compiler::Compile_mult_const, &Compiler::Compile_mult, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
-      case InstructionFunct::multu: CompileTemplate(&Compiler::Compile_multu_const, &Compiler::Compile_multu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
-      case InstructionFunct::div: CompileTemplate(&Compiler::Compile_div_const, &Compiler::Compile_div, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
-      case InstructionFunct::divu: CompileTemplate(&Compiler::Compile_divu_const, &Compiler::Compile_divu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
-      case InstructionFunct::add: CompileTemplate(&Compiler::Compile_add_const, &Compiler::Compile_add, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_OVERFLOW); break;
-      case InstructionFunct::addu: CompileTemplate(&Compiler::Compile_addu_const, &Compiler::Compile_addu, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
-      case InstructionFunct::sub: CompileTemplate(&Compiler::Compile_sub_const, &Compiler::Compile_sub, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_CAN_OVERFLOW); break;
-      case InstructionFunct::subu: CompileTemplate(&Compiler::Compile_subu_const, &Compiler::Compile_subu, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
-      case InstructionFunct::and_: CompileTemplate(&Compiler::Compile_and_const, &Compiler::Compile_and, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
-      case InstructionFunct::or_: CompileTemplate(&Compiler::Compile_or_const, &Compiler::Compile_or, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
-      case InstructionFunct::xor_: CompileTemplate(&Compiler::Compile_xor_const, &Compiler::Compile_xor, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
-      case InstructionFunct::nor: CompileTemplate(&Compiler::Compile_nor_const, &Compiler::Compile_nor, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
-      case InstructionFunct::slt: CompileTemplate(&Compiler::Compile_slt_const, &Compiler::Compile_slt, TF_WRITES_D | TF_READS_T | TF_READS_S); break;
-      case InstructionFunct::sltu: CompileTemplate(&Compiler::Compile_sltu_const, &Compiler::Compile_sltu, TF_WRITES_D | TF_READS_T | TF_READS_S); break;
+        case InstructionFunct::sll: CompileTemplate(&Compiler::Compile_sll_const, &Compiler::Compile_sll, TF_WRITES_D | TF_READS_T); break;
+        case InstructionFunct::srl: CompileTemplate(&Compiler::Compile_srl_const, &Compiler::Compile_srl, TF_WRITES_D | TF_READS_T); break;
+        case InstructionFunct::sra: CompileTemplate(&Compiler::Compile_sra_const, &Compiler::Compile_sra, TF_WRITES_D | TF_READS_T); break;
+        case InstructionFunct::sllv: CompileTemplate(&Compiler::Compile_sllv_const, &Compiler::Compile_sllv, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
+        case InstructionFunct::srlv: CompileTemplate(&Compiler::Compile_srlv_const, &Compiler::Compile_srlv, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
+        case InstructionFunct::srav: CompileTemplate(&Compiler::Compile_srav_const, &Compiler::Compile_srav, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
+        case InstructionFunct::jr: CompileTemplate(&Compiler::Compile_jr_const, &Compiler::Compile_jr, TF_READS_S); break;
+        case InstructionFunct::jalr: CompileTemplate(&Compiler::Compile_jalr_const, &Compiler::Compile_jalr, /*TF_WRITES_D |*/ TF_READS_S | TF_NO_NOP); break;
+        case InstructionFunct::syscall: Compile_syscall(); break;
+        case InstructionFunct::break_: Compile_break(); break;
+        case InstructionFunct::mfhi: CompileMoveRegTemplate(inst->r.rd, Reg::hi); break;
+        case InstructionFunct::mthi: CompileMoveRegTemplate(Reg::hi, inst->r.rs); break;
+        case InstructionFunct::mflo: CompileMoveRegTemplate(inst->r.rd, Reg::lo); break;
+        case InstructionFunct::mtlo: CompileMoveRegTemplate(Reg::lo, inst->r.rs); break;
+        case InstructionFunct::mult: CompileTemplate(&Compiler::Compile_mult_const, &Compiler::Compile_mult, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
+        case InstructionFunct::multu: CompileTemplate(&Compiler::Compile_multu_const, &Compiler::Compile_multu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
+        case InstructionFunct::div: CompileTemplate(&Compiler::Compile_div_const, &Compiler::Compile_div, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
+        case InstructionFunct::divu: CompileTemplate(&Compiler::Compile_divu_const, &Compiler::Compile_divu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
+        case InstructionFunct::add: CompileTemplate(&Compiler::Compile_add_const, &Compiler::Compile_add, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_OVERFLOW); break;
+        case InstructionFunct::addu: CompileTemplate(&Compiler::Compile_addu_const, &Compiler::Compile_addu, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
+        case InstructionFunct::sub: CompileTemplate(&Compiler::Compile_sub_const, &Compiler::Compile_sub, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_CAN_OVERFLOW); break;
+        case InstructionFunct::subu: CompileTemplate(&Compiler::Compile_subu_const, &Compiler::Compile_subu, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
+        case InstructionFunct::and_: CompileTemplate(&Compiler::Compile_and_const, &Compiler::Compile_and, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
+        case InstructionFunct::or_: CompileTemplate(&Compiler::Compile_or_const, &Compiler::Compile_or, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
+        case InstructionFunct::xor_: CompileTemplate(&Compiler::Compile_xor_const, &Compiler::Compile_xor, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
+        case InstructionFunct::nor: CompileTemplate(&Compiler::Compile_nor_const, &Compiler::Compile_nor, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
+        case InstructionFunct::slt: CompileTemplate(&Compiler::Compile_slt_const, &Compiler::Compile_slt, TF_WRITES_D | TF_READS_T | TF_READS_S); break;
+        case InstructionFunct::sltu: CompileTemplate(&Compiler::Compile_sltu_const, &Compiler::Compile_sltu, TF_WRITES_D | TF_READS_T | TF_READS_S); break;
 
       default: Panic("fixme funct"); break;
       }
@@ -834,7 +834,27 @@ void CPU::NewRec::Compiler::CompileInstruction()
     case InstructionOp::swl: Compile_Fallback(); break;
     case InstructionOp::swr: Compile_Fallback(); break;
 
-    case InstructionOp::cop0: Compile_Fallback(); break;
+    case InstructionOp::cop0:
+      {
+        if (inst->cop.IsCommonInstruction())
+        {
+          switch (inst->cop.CommonOp())
+          {
+            case CopCommonInstruction::mfcn: CompileTemplate(nullptr, &Compiler::Compile_mfc0, TF_WRITES_T | TF_LOAD_DELAY); break;
+            case CopCommonInstruction::mtcn: CompileTemplate(nullptr, &Compiler::Compile_mtc0, TF_READS_T | TF_LOAD_DELAY); break;
+            default: Compile_Fallback(); break;
+          }
+        }
+        else
+        {
+          switch (inst->cop.Cop0Op())
+          {
+            case Cop0Instruction::rfe: CompileTemplate(nullptr, &Compiler::Compile_rfe, 0); break;
+            default: Compile_Fallback(); break;
+          }
+        }
+      }
+      break;
 
     default: Panic("Fixme"); break;
       // clang-format on
@@ -984,6 +1004,8 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
     cf.valid_host_hi = true;
   }
 
+  const HostRegAllocType write_type = (tflags & TF_LOAD_DELAY) ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG;
+
   if (tflags & TF_CAN_OVERFLOW && g_settings.cpu_recompiler_memory_exceptions)
   {
     // allocate a temp register for the result, then swap it back
@@ -1005,12 +1027,12 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
     if (tflags & TF_WRITES_D && rd != Reg::zero)
     {
       DeleteMIPSReg(rd, false);
-      RenameHostReg(tempreg, HR_MODE_WRITE, HR_TYPE_CPU_REG, rd);
+      RenameHostReg(tempreg, HR_MODE_WRITE, write_type, rd);
     }
     else if (tflags & TF_WRITES_T && rt != Reg::zero)
     {
       DeleteMIPSReg(rt, false);
-      RenameHostReg(tempreg, HR_MODE_WRITE, HR_TYPE_CPU_REG, rt);
+      RenameHostReg(tempreg, HR_MODE_WRITE, write_type, rt);
     }
     else
     {
@@ -1021,15 +1043,13 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   {
     if (tflags & TF_WRITES_D && rd != Reg::zero)
     {
-      DebugAssert(!(tflags & TF_LOAD_DELAY));
-      cf.host_d = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, rd);
+      cf.host_d = AllocateHostReg(HR_MODE_WRITE, write_type, rd);
       cf.valid_host_d = true;
     }
 
     if (tflags & TF_WRITES_T && rt != Reg::zero)
     {
-      DebugAssert(!(tflags & TF_LOAD_DELAY));
-      cf.host_t = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, rt);
+      cf.host_t = AllocateHostReg(HR_MODE_WRITE, write_type, rt);
       cf.valid_host_t = true;
     }
 
@@ -1524,4 +1544,47 @@ void CPU::NewRec::Compiler::Compile_lui()
     return;
 
   SetConstantReg(inst->i.rt, inst->i.imm_zext32() << 16);
+}
+
+static constexpr const std::array<std::pair<u32*, u32>, 16> s_cop0_table = {
+  {{nullptr, 0x00000000u},
+   {nullptr, 0x00000000u},
+   {nullptr, 0x00000000u},
+   {&CPU::g_state.cop0_regs.BPC, 0xffffffffu},
+   {nullptr, 0},
+   {&CPU::g_state.cop0_regs.BDA, 0xffffffffu},
+   {&CPU::g_state.cop0_regs.TAR, 0x00000000u},
+   {&CPU::g_state.cop0_regs.dcic.bits, CPU::Cop0Registers::DCIC::WRITE_MASK},
+   {&CPU::g_state.cop0_regs.BadVaddr, 0x00000000u},
+   {&CPU::g_state.cop0_regs.BDAM, 0xffffffffu},
+   {nullptr, 0x00000000u},
+   {&CPU::g_state.cop0_regs.BPCM, 0xffffffffu},
+   {&CPU::g_state.cop0_regs.sr.bits, CPU::Cop0Registers::SR::WRITE_MASK},
+   {&CPU::g_state.cop0_regs.cause.bits, CPU::Cop0Registers::CAUSE::WRITE_MASK},
+   {&CPU::g_state.cop0_regs.EPC, 0x00000000u},
+   {&CPU::g_state.cop0_regs.PRID, 0x00000000u}}};
+
+u32* CPU::NewRec::Compiler::GetCop0RegPtr(Cop0Reg reg)
+{
+  return (static_cast<u8>(reg) < s_cop0_table.size()) ? s_cop0_table[static_cast<u8>(reg)].first : nullptr;
+}
+
+u32 CPU::NewRec::Compiler::GetCop0RegWriteMask(Cop0Reg reg)
+{
+  return (static_cast<u8>(reg) < s_cop0_table.size()) ? s_cop0_table[static_cast<u8>(reg)].second : 0;
+}
+
+void CPU::NewRec::Compiler::Compile_mfc0(CompileFlags cf)
+{
+  const Cop0Reg r = static_cast<Cop0Reg>(MipsD());
+  const u32* ptr = GetCop0RegPtr(r);
+  if (!ptr)
+  {
+    Log_ErrorPrintf("Read from unknown cop0 reg %u", static_cast<u32>(r));
+    Compile_Fallback();
+    return;
+  }
+
+  DebugAssert(cf.valid_host_t);
+  LoadHostRegFromCPUPointer(cf.host_t, ptr);
 }

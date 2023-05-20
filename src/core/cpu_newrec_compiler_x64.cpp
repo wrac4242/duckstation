@@ -1174,6 +1174,121 @@ void CPU::NewRec::X64Compiler::Compile_Store(CompileFlags cf, MemoryAccessSize s
   }
 }
 
+void CPU::NewRec::X64Compiler::Compile_mtc0(CompileFlags cf)
+{
+  const Cop0Reg reg = static_cast<Cop0Reg>(MipsD());
+  const u32* ptr = GetCop0RegPtr(reg);
+  const u32 mask = GetCop0RegWriteMask(reg);
+  if (!ptr)
+  {
+    Compile_Fallback();
+    return;
+  }
+
+  const Reg32 rt = cf.valid_host_t ? CFGetRegT(cf) : RWARG1;
+  const u32 constant_value = cf.const_t ? GetConstantRegU32(cf.MipsT()) : 0;
+  if (mask == 0)
+  {
+    // if it's a read-only register, ignore
+    Log_DebugPrintf("Ignoring write to read-only cop0 reg %u", static_cast<u32>(reg));
+    return;
+  }
+
+  // for some registers, we need to test certain bits
+  const bool needs_bit_test = (reg == Cop0Reg::SR && g_settings.IsUsingFastmem());
+  const Reg32 changed_bits = RWARG3;
+
+  // update value
+  if (cf.valid_host_t)
+  {
+    cg->mov(RWARG1, rt);
+    cg->mov(RWARG2, cg->dword[PTR(ptr)]);
+    cg->and_(RWARG1, mask);
+    if (needs_bit_test)
+    {
+      cg->mov(changed_bits, RWARG2);
+      cg->xor_(changed_bits, rt);
+    }
+    cg->and_(RWARG2, ~mask);
+    cg->or_(RWARG2, rt);
+    cg->mov(cg->dword[PTR(ptr)], RWARG2);
+  }
+  else
+  {
+    cg->mov(RWARG2, cg->dword[PTR(ptr)]);
+    if (needs_bit_test)
+    {
+      cg->mov(changed_bits, RWARG2);
+      cg->xor_(changed_bits, constant_value);
+    }
+    cg->and_(RWARG2, ~mask);
+    cg->or_(RWARG2, constant_value & mask);
+    cg->mov(cg->dword[PTR(ptr)], RWARG2);
+  }
+
+  if (reg == Cop0Reg::SR && g_settings.IsUsingFastmem())
+  {
+    // TODO: changing SR[Isc] needs to update fastmem views
+    Log_WarningPrintf("TODO: changing SR[Isc] needs to update fastmem views");
+  }
+
+  if (reg == Cop0Reg::SR || reg == Cop0Reg::CAUSE)
+  {
+    const Reg32 sr =
+      (reg == Cop0Reg::SR) ? RWARG2 : (cg->mov(RWARG1, cg->dword[PTR(&g_state.cop0_regs.sr.bits)]), RWARG1);
+    TestInterrupts(sr);
+  }
+
+  if (reg == Cop0Reg::DCIC && g_settings.cpu_recompiler_memory_exceptions)
+  {
+    // TODO: DCIC handling for debug breakpoints
+    Log_WarningPrintf("TODO: DCIC handling for debug breakpoints");
+  }
+}
+
+void CPU::NewRec::X64Compiler::Compile_rfe(CompileFlags cf)
+{
+  // shift mode bits right two, preserving upper bits
+  static constexpr u32 mode_bits_mask = UINT32_C(0b1111);
+  cg->mov(RWARG1, cg->dword[PTR(&g_state.cop0_regs.sr.bits)]);
+  cg->mov(RWARG2, RWARG1);
+  cg->shr(RWARG2, 2);
+  cg->and_(RWARG1, ~mode_bits_mask);
+  cg->and_(RWARG2, mode_bits_mask);
+  cg->or_(RWARG1, RWARG2);
+  cg->mov(cg->dword[PTR(&g_state.cop0_regs.sr.bits)], RWARG1);
+
+  TestInterrupts(RWARG1);
+}
+
+void CPU::NewRec::X64Compiler::TestInterrupts(const Xbyak::Reg32& sr)
+{
+  // need to test for interrupts, flush everything back, since we're gonna have to do it anyway, and this isn't hot
+  Flush(FLUSH_FLUSH_MIPS_REGISTERS);
+
+  // if Iec == 0 then goto no_interrupt
+  Label no_interrupt;
+
+  cg->test(sr, 1);
+  cg->jz(no_interrupt, Xbyak::CodeGenerator::T_SHORT);
+
+  // sr & cause
+  cg->and_(sr, cg->dword[PTR(&g_state.cop0_regs.cause.bits)]);
+
+  // ((sr & cause) & 0xff00) == 0 goto no_interrupt
+  cg->test(sr, 0xFF00);
+  cg->jz(no_interrupt, Xbyak::CodeGenerator::T_SHORT);
+
+  // TODO: put this in far code
+  BackupHostState();
+  Flush(FLUSH_FOR_C_CALL);
+  cg->call(reinterpret_cast<const void*>(&DispatchInterrupt));
+  EndBlock(std::nullopt);
+  RestoreHostState();
+
+  cg->L(no_interrupt);
+}
+
 void CPU::NewRec::X64Compiler::CompileThunk(u32 start_pc)
 {
   // TODO: share this

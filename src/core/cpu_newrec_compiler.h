@@ -102,6 +102,8 @@ protected:
     TF_CAN_OVERFLOW = (1 << 10),
 
     // TF_NORENAME = // TODO
+    // TF_FORCEREGS
+    // TF_FORCEREGT
     TF_LOAD_DELAY = (1 << 11),
 
     TF_NO_NOP = (1 << 12),
@@ -311,6 +313,13 @@ protected:
                             const std::optional<VirtualMemoryAddress>& address) = 0;
   virtual void Compile_Store(CompileFlags cf, MemoryAccessSize size,
                              const std::optional<VirtualMemoryAddress>& address) = 0;
+
+  static u32* GetCop0RegPtr(Cop0Reg reg);
+  static u32 GetCop0RegWriteMask(Cop0Reg reg);
+
+  void Compile_mfc0(CompileFlags cf);
+  virtual void Compile_mtc0(CompileFlags cf) = 0;
+  virtual void Compile_rfe(CompileFlags cf) = 0;
 
   Block* m_block = nullptr;
   u32 m_compiler_pc = 0;
