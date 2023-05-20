@@ -139,7 +139,7 @@ void CPU::NewRec::Compiler::UpdateLoadDelay()
     // have to invalidate registers, we might have one of them cached
     // TODO: double check the order here, will we trash a new value? we shouldn't...
     Log_DebugPrintf("Invalidating non-dirty registers, and flushing load delay from state");
-    Flush(FLUSH_INVALIDATE_NON_DIRTY_GUEST_REGISTERS | FLUSH_LOAD_DELAY_FROM_STATE);
+    Flush(FLUSH_INVALIDATE_NON_DIRTY_MIPS_REGISTERS | FLUSH_LOAD_DELAY_FROM_STATE);
   }
 
   // commit the delayed register load
@@ -180,7 +180,7 @@ void CPU::NewRec::Compiler::FinishLoadDelay()
   }
 
   // kill any (old) cached value for this register
-  DeleteGuestReg(m_load_delay_register, false);
+  DeleteMIPSReg(m_load_delay_register, false);
 
   Log_DebugPrintf("Finished delayed load to %s in host register %s", GetRegName(m_load_delay_register),
                   GetHostRegName(m_load_delay_value_register));
@@ -352,15 +352,20 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
 
       if (flags & HR_MODE_READ)
       {
-        PopulateHostReg(hreg.value());
+        DebugAssert(ra.reg >= 0 && ra.reg < static_cast<s8>(Reg::count));
 
         if (HasConstantReg(static_cast<Reg>(reg)))
         {
           // may as well flush it now
           Log_DebugPrintf("Flush constant register in guest reg %s to host reg %s", GetRegName(static_cast<Reg>(reg)),
                           GetHostRegName(hreg.value()));
+          LoadHostRegWithConstant(hreg.value(), GetConstantRegU32(static_cast<Reg>(reg)));
           m_constant_regs_dirty.reset(reg);
           ra.flags |= HR_MODE_WRITE;
+        }
+        else
+        {
+          LoadHostRegFromCPUPointer(hreg.value(), &g_state.regs.r[reg]);
         }
       }
 
@@ -383,7 +388,7 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
       m_load_delay_register = static_cast<Reg>(reg);
       m_load_delay_value_register = hreg.value();
       if (flags & HR_MODE_READ)
-        PopulateHostReg(hreg.value());
+        LoadHostRegFromCPUPointer(hreg.value(), &g_state.load_delay_value);
     }
     break;
 
@@ -394,7 +399,7 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
       m_next_load_delay_register = static_cast<Reg>(reg);
       m_next_load_delay_value_register = hreg.value();
       if (flags & HR_MODE_READ)
-        PopulateHostReg(hreg.value());
+        LoadHostRegFromCPUPointer(hreg.value(), &g_state.next_load_delay_value);
     }
     break;
 
@@ -478,6 +483,7 @@ void CPU::NewRec::Compiler::FlushHostReg(u32 reg)
         DebugAssert(ra.reg > 0 && ra.reg < static_cast<s8>(Reg::count));
         Log_DebugPrintf("Flushing register %s in host register %s to state", GetRegName(static_cast<Reg>(ra.reg)),
                         GetHostRegName(reg));
+        StoreHostRegToCPUPointer(reg, &g_state.regs.r[ra.reg]);
       }
       break;
 
@@ -487,6 +493,7 @@ void CPU::NewRec::Compiler::FlushHostReg(u32 reg)
         Log_DebugPrintf("Flushing load delayed register %s in host register %s to state",
                         GetRegName(static_cast<Reg>(ra.reg)), GetHostRegName(reg));
 
+        StoreHostRegToCPUPointer(reg, &g_state.load_delay_value);
         m_load_delay_value_register = NUM_HOST_REGS;
       }
       break;
@@ -497,12 +504,12 @@ void CPU::NewRec::Compiler::FlushHostReg(u32 reg)
         Log_WarningPrintf("Flushing NEXT load delayed register %s in host register %s to state",
                           GetRegName(static_cast<Reg>(ra.reg)), GetHostRegName(reg));
 
+        StoreHostRegToCPUPointer(reg, &g_state.next_load_delay_value);
         m_next_load_delay_value_register = NUM_HOST_REGS;
       }
       break;
     }
 
-    WritebackHostReg(reg);
     ra.flags = (ra.flags & ~HR_MODE_WRITE) | HR_MODE_READ;
   }
 }
@@ -584,7 +591,7 @@ void CPU::NewRec::Compiler::ClearHostRegsNeeded()
   }
 }
 
-void CPU::NewRec::Compiler::DeleteGuestReg(Reg reg, bool flush)
+void CPU::NewRec::Compiler::DeleteMIPSReg(Reg reg, bool flush)
 {
   DebugAssert(reg != Reg::zero);
 
@@ -594,7 +601,7 @@ void CPU::NewRec::Compiler::DeleteGuestReg(Reg reg, bool flush)
     if (ra.flags & HR_ALLOCATED && ra.type == HR_TYPE_CPU_REG && ra.reg == static_cast<s8>(reg))
     {
       if (flush)
-        WritebackHostReg(i);
+        FlushHostReg(i);
       ClearHostReg(i);
       ClearConstantReg(reg);
       return;
@@ -621,7 +628,7 @@ void CPU::NewRec::Compiler::Flush(u32 flags)
     }
   }
 
-  if (flags & FLUSH_INVALIDATE_GUEST_REGISTERS)
+  if (flags & FLUSH_INVALIDATE_MIPS_REGISTERS)
   {
     for (u32 i = 0; i < NUM_HOST_REGS; i++)
     {
@@ -634,7 +641,7 @@ void CPU::NewRec::Compiler::Flush(u32 flags)
   }
   else
   {
-    if (flags & FLUSH_FLUSH_GUEST_REGISTERS)
+    if (flags & FLUSH_FLUSH_MIPS_REGISTERS)
     {
       for (u32 i = 0; i < NUM_HOST_REGS; i++)
       {
@@ -647,7 +654,7 @@ void CPU::NewRec::Compiler::Flush(u32 flags)
       FlushConstantRegs(false);
     }
 
-    if (flags & FLUSH_INVALIDATE_NON_DIRTY_GUEST_REGISTERS)
+    if (flags & FLUSH_INVALIDATE_NON_DIRTY_MIPS_REGISTERS)
     {
       constexpr u32 req_flags = (HR_ALLOCATED | HR_MODE_WRITE);
 
@@ -678,6 +685,9 @@ void CPU::NewRec::Compiler::Flush(u32 flags)
 void CPU::NewRec::Compiler::FlushConstantReg(Reg r)
 {
   DebugAssert(m_constant_regs_valid.test(static_cast<u32>(r)));
+  Log_DebugPrintf("Writing back register %s with constant value 0x%08X", GetRegName(r),
+                  m_constant_reg_values[static_cast<u32>(r)]);
+  StoreConstantToCPUPointer(m_constant_reg_values[static_cast<u32>(r)], &g_state.regs.r[static_cast<u32>(r)]);
   m_constant_regs_dirty.reset(static_cast<u32>(r));
 }
 
@@ -768,7 +778,7 @@ void CPU::NewRec::Compiler::CompileInstruction()
       case InstructionFunct::srlv: CompileTemplate(&Compiler::Compile_srlv_const, &Compiler::Compile_srlv, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
       case InstructionFunct::srav: CompileTemplate(&Compiler::Compile_srav_const, &Compiler::Compile_srav, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
       case InstructionFunct::jr: CompileTemplate(&Compiler::Compile_jr_const, &Compiler::Compile_jr, TF_READS_S); break;
-      case InstructionFunct::jalr: CompileTemplate(&Compiler::Compile_jalr_const, &Compiler::Compile_jalr, TF_WRITES_D | TF_READS_S | TF_NO_NOP); break;
+      case InstructionFunct::jalr: CompileTemplate(&Compiler::Compile_jalr_const, &Compiler::Compile_jalr, /*TF_WRITES_D |*/ TF_READS_S | TF_NO_NOP); break;
       case InstructionFunct::syscall: Compile_syscall(); break;
       case InstructionFunct::break_: Compile_break(); break;
       case InstructionFunct::mfhi: CompileMoveRegTemplate(inst->r.rd, Reg::hi); break;
@@ -996,12 +1006,12 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
 
     if (tflags & TF_WRITES_D && rd != Reg::zero)
     {
-      DeleteGuestReg(rd, false);
+      DeleteMIPSReg(rd, false);
       RenameHostReg(tempreg, HR_MODE_WRITE, HR_TYPE_CPU_REG, static_cast<s8>(rd));
     }
     else if (tflags & TF_WRITES_T && rt != Reg::zero)
     {
-      DeleteGuestReg(rt, false);
+      DeleteMIPSReg(rt, false);
       RenameHostReg(tempreg, HR_MODE_WRITE, HR_TYPE_CPU_REG, static_cast<s8>(rt));
     }
     else
@@ -1116,7 +1126,7 @@ void CPU::NewRec::Compiler::CompileMoveRegTemplate(Reg dst, Reg src)
 
   if (HasConstantReg(src))
   {
-    DeleteGuestReg(dst, false);
+    DeleteMIPSReg(dst, false);
     SetConstantReg(dst, GetConstantRegU32(src));
     return;
   }
@@ -1165,6 +1175,7 @@ void CPU::NewRec::Compiler::Compile_jalr_const(CompileFlags cf)
   const u32 newpc = GetConstantRegU32(cf.MipsS());
   if (MipsD() != Reg::zero)
     SetConstantReg(MipsD(), GetBranchReturnAddress());
+
   CompileBranchDelaySlot();
   EndBlock(newpc);
 }

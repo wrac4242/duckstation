@@ -28,9 +28,10 @@ protected:
 
   const void* GetCurrentCodePointer() override;
 
-  void FlushConstantReg(Reg r) override;
-  void PopulateHostReg(u32 reg) override;
-  void WritebackHostReg(u32 reg) override;
+  void LoadHostRegWithConstant(u32 reg, u32 val);
+  void LoadHostRegFromCPUPointer(u32 reg, const void* ptr);
+  void StoreConstantToCPUPointer(u32 val, const void* ptr);
+  void StoreHostRegToCPUPointer(u32 reg, const void* ptr);
   void CopyHostReg(u32 dst, u32 src) override;
 
   void Reset(Block* block) override;

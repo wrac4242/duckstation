@@ -85,12 +85,12 @@ void CPU::NewRec::X64Compiler::Reset(Block* block)
 void CPU::NewRec::X64Compiler::BeginBlock()
 {
   Compiler::BeginBlock();
-#if 1
+#if 0
   cg->call(&CPU::CodeCache::LogCurrentState);
 #endif
 
 #if 0
-  if (m_block->pc == 0x8001D644)
+  if (m_block->pc == 0x000029C4)
   {
     //__debugbreak();
     cg->db(0xcc);
@@ -264,64 +264,24 @@ void CPU::NewRec::X64Compiler::DisassembleAndLog(const void* start, u32 size)
 #endif
 }
 
-void CPU::NewRec::X64Compiler::FlushConstantReg(Reg r)
+void CPU::NewRec::X64Compiler::LoadHostRegWithConstant(u32 reg, u32 val)
 {
-  cg->mov(cg->dword[PTR(&g_state.regs.r[static_cast<u32>(r)])], m_constant_reg_values[static_cast<u32>(r)]);
-  Compiler::FlushConstantReg(r);
+  cg->mov(Reg32(reg), val);
 }
 
-void CPU::NewRec::X64Compiler::PopulateHostReg(u32 reg)
+void CPU::NewRec::X64Compiler::LoadHostRegFromCPUPointer(u32 reg, const void* ptr)
 {
-  DebugAssert(reg < NUM_HOST_REGS);
-  HostRegAlloc& ra = m_host_regs[reg];
-  switch (ra.type)
-  {
-    case HR_TYPE_CPU_REG:
-    {
-      DebugAssert(ra.reg >= 0 && ra.reg < static_cast<s8>(Reg::count));
-      if (HasConstantReg(static_cast<Reg>(ra.reg)))
-        cg->mov(Reg32(reg), GetConstantRegU32(static_cast<Reg>(ra.reg)));
-      else
-        cg->mov(Reg32(reg), cg->dword[PTR(&g_state.regs.r[ra.reg])]);
-    }
-    break;
-
-    case HR_TYPE_LOAD_DELAY_VALUE:
-      cg->mov(Reg32(reg), cg->dword[PTR(&g_state.load_delay_value)]);
-      break;
-
-    case HR_TYPE_NEXT_LOAD_DELAY_VALUE:
-      cg->mov(Reg32(reg), cg->dword[PTR(&g_state.next_load_delay_value)]);
-      break;
-
-    default:
-      Panic("Invalid reg type");
-      break;
-  }
+  cg->mov(Reg32(reg), cg->dword[PTR(ptr)]);
 }
 
-void CPU::NewRec::X64Compiler::WritebackHostReg(u32 reg)
+void CPU::NewRec::X64Compiler::StoreHostRegToCPUPointer(u32 reg, const void* ptr)
 {
-  DebugAssert(reg < NUM_HOST_REGS);
-  HostRegAlloc& ra = m_host_regs[reg];
-  switch (ra.type)
-  {
-    case HR_TYPE_CPU_REG:
-      cg->mov(cg->dword[PTR(&g_state.regs.r[ra.reg])], Reg32(reg));
-      break;
+  cg->mov(cg->dword[PTR(ptr)], Reg32(reg));
+}
 
-    case HR_TYPE_LOAD_DELAY_VALUE:
-      cg->mov(cg->dword[PTR(&g_state.load_delay_value)], Reg32(reg));
-      break;
-
-    case HR_TYPE_NEXT_LOAD_DELAY_VALUE:
-      cg->mov(cg->dword[PTR(&g_state.next_load_delay_value)], Reg32(reg));
-      break;
-
-    default:
-      Panic("Invalid reg type");
-      break;
-  }
+void CPU::NewRec::X64Compiler::StoreConstantToCPUPointer(u32 val, const void* ptr)
+{
+  cg->mov(cg->dword[PTR(ptr)], val);
 }
 
 void CPU::NewRec::X64Compiler::CopyHostReg(u32 dst, u32 src)
@@ -583,18 +543,12 @@ void CPU::NewRec::X64Compiler::Compile_jalr(CompileFlags cf)
     cg->mov(RWARG1, MipsPtr(cf.MipsS()));
 
   const Reg32 pcreg = cf.valid_host_s ? CFGetRegS(cf) : RWARG1;
-  CheckBranchTarget(pcreg);
 
   if (MipsD() != Reg::zero)
-  {
-    // TODO: Don't allocate here
-    if (cf.valid_host_d)
-      cg->mov(CFGetRegD(cf), GetBranchReturnAddress());
-    else
-      cg->mov(MipsPtr(MipsD()), GetBranchReturnAddress());
-  }
+    SetConstantReg(MipsD(), GetBranchReturnAddress());
 
   cg->mov(cg->dword[PTR(&g_state.regs.pc)], pcreg);
+  CheckBranchTarget(pcreg);
   CompileBranchDelaySlot(false);
   EndBlock(std::nullopt);
 }

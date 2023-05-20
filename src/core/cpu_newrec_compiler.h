@@ -28,9 +28,9 @@ public:
 protected:
   enum FlushFlags : u32
   {
-    FLUSH_FLUSH_GUEST_REGISTERS = (1 << 0),
-    FLUSH_INVALIDATE_GUEST_REGISTERS = (1 << 1),
-    FLUSH_INVALIDATE_NON_DIRTY_GUEST_REGISTERS = (1 << 2),
+    FLUSH_FLUSH_MIPS_REGISTERS = (1 << 0),
+    FLUSH_INVALIDATE_MIPS_REGISTERS = (1 << 1),
+    FLUSH_INVALIDATE_NON_DIRTY_MIPS_REGISTERS = (1 << 2),
     FLUSH_FREE_CALLER_SAVED_REGISTERS = (1 << 3),
     FLUSH_FREE_ALL_REGISTERS = (1 << 4),
     FLUSH_PC = (1 << 5),
@@ -41,9 +41,9 @@ protected:
 
     FLUSH_FOR_C_CALL = (FLUSH_FREE_CALLER_SAVED_REGISTERS),
     FLUSH_FOR_LOADSTORE = (FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_CYCLES),
-    FLUSH_FOR_BRANCH = (FLUSH_FLUSH_GUEST_REGISTERS),
+    FLUSH_FOR_BRANCH = (FLUSH_FLUSH_MIPS_REGISTERS),
     FLUSH_FOR_INTERPRETER =
-      (FLUSH_FLUSH_GUEST_REGISTERS | FLUSH_INVALIDATE_GUEST_REGISTERS | FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_PC |
+      (FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_INVALIDATE_MIPS_REGISTERS | FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_PC |
        FLUSH_CYCLES | FLUSH_INSTRUCTION_BITS | FLUSH_LOAD_DELAY),
     FLUSH_END_BLOCK = 0xFFFFFFFFu & ~(FLUSH_PC | FLUSH_INSTRUCTION_BITS),
   };
@@ -163,7 +163,7 @@ protected:
   }
   void SetConstantReg(Reg r, u32 v);
   void ClearConstantReg(Reg r);
-  virtual void FlushConstantReg(Reg r);
+  void FlushConstantReg(Reg r);
   void FlushConstantRegs(bool invalidate);
 
   Reg MipsD() const;
@@ -195,11 +195,14 @@ protected:
   void RenameHostReg(u32 reg, u32 new_flags, HostRegAllocType new_type, s8 new_reg);
   void ClearHostRegNeeded(u32 reg);
   void ClearHostRegsNeeded();
-  virtual void PopulateHostReg(u32 reg) = 0;
-  virtual void WritebackHostReg(u32 reg) = 0;
+  void DeleteMIPSReg(Reg reg, bool flush);
+
+  virtual void LoadHostRegWithConstant(u32 reg, u32 val) = 0;
+  virtual void LoadHostRegFromCPUPointer(u32 reg, const void* ptr) = 0;
+  virtual void StoreConstantToCPUPointer(u32 val, const void* ptr) = 0;
+  virtual void StoreHostRegToCPUPointer(u32 reg, const void* ptr) = 0;
   virtual void CopyHostReg(u32 dst, u32 src) = 0;
   virtual void Flush(u32 flags);
-  void DeleteGuestReg(Reg reg, bool flush);
 
   /// Returns true if there is a load delay which will be stored at the end of the instruction.
   bool HasLoadDelay() const { return m_load_delay_register != Reg::count; }
