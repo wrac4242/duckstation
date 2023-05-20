@@ -783,8 +783,8 @@ void CPU::NewRec::Compiler::CompileInstruction()
       case InstructionFunct::mthi: CompileMoveRegTemplate(Reg::hi, inst->r.rs); break;
       case InstructionFunct::mflo: CompileMoveRegTemplate(inst->r.rd, Reg::lo); break;
       case InstructionFunct::mtlo: CompileMoveRegTemplate(Reg::lo, inst->r.rs); break;
-      case InstructionFunct::mult: CompileTemplate(&Compiler::Compile_mult_const, &Compiler::Compile_mult, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
-      case InstructionFunct::multu: CompileTemplate(&Compiler::Compile_multu_const, &Compiler::Compile_multu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
+      case InstructionFunct::mult: CompileTemplate(&Compiler::Compile_mult_const, &Compiler::Compile_mult, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
+      case InstructionFunct::multu: CompileTemplate(&Compiler::Compile_multu_const, &Compiler::Compile_multu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
       case InstructionFunct::div: Compile_Fallback(); break;
       case InstructionFunct::divu: Compile_Fallback(); break;
       case InstructionFunct::add: CompileTemplate(&Compiler::Compile_add_const, &Compiler::Compile_add, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_OVERFLOW); break;
