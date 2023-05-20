@@ -785,8 +785,8 @@ void CPU::NewRec::Compiler::CompileInstruction()
       case InstructionFunct::mtlo: CompileMoveRegTemplate(Reg::lo, inst->r.rs); break;
       case InstructionFunct::mult: CompileTemplate(&Compiler::Compile_mult_const, &Compiler::Compile_mult, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
       case InstructionFunct::multu: CompileTemplate(&Compiler::Compile_multu_const, &Compiler::Compile_multu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
-      case InstructionFunct::div: Compile_Fallback(); break;
-      case InstructionFunct::divu: Compile_Fallback(); break;
+      case InstructionFunct::div: CompileTemplate(&Compiler::Compile_div_const, &Compiler::Compile_div, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
+      case InstructionFunct::divu: CompileTemplate(&Compiler::Compile_divu_const, &Compiler::Compile_divu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
       case InstructionFunct::add: CompileTemplate(&Compiler::Compile_add_const, &Compiler::Compile_add, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_OVERFLOW); break;
       case InstructionFunct::addu: CompileTemplate(&Compiler::Compile_addu_const, &Compiler::Compile_addu, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
       case InstructionFunct::sub: CompileTemplate(&Compiler::Compile_sub_const, &Compiler::Compile_sub, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_CAN_OVERFLOW); break;
@@ -1389,6 +1389,61 @@ void CPU::NewRec::Compiler::Compile_multu_const(CompileFlags cf)
   const u64 res = static_cast<u64>(GetConstantRegU32(cf.MipsS())) * static_cast<u64>(GetConstantRegU32(cf.MipsT()));
   SetConstantReg(Reg::hi, static_cast<u32>(res >> 32));
   SetConstantReg(Reg::lo, static_cast<u32>(res));
+}
+
+void CPU::NewRec::Compiler::Compile_div_const(CompileFlags cf)
+{
+  DebugAssert(HasConstantReg(cf.MipsS()) && HasConstantReg(cf.MipsT()));
+
+  const s32 num = GetConstantRegS32(cf.MipsS());
+  const s32 denom = GetConstantRegS32(cf.MipsT());
+
+  s32 lo, hi;
+  if (denom == 0)
+  {
+    // divide by zero
+    lo = (num >= 0) ? UINT32_C(0xFFFFFFFF) : UINT32_C(1);
+    hi = static_cast<u32>(num);
+  }
+  else if (static_cast<u32>(num) == UINT32_C(0x80000000) && denom == -1)
+  {
+    // unrepresentable
+    lo = UINT32_C(0x80000000);
+    hi = 0;
+  }
+  else
+  {
+    lo = num / denom;
+    hi = num % denom;
+  }
+
+  SetConstantReg(Reg::hi, hi);
+  SetConstantReg(Reg::lo, lo);
+}
+
+void CPU::NewRec::Compiler::Compile_divu_const(CompileFlags cf)
+{
+  DebugAssert(HasConstantReg(cf.MipsS()) && HasConstantReg(cf.MipsT()));
+
+  const u32 num = GetConstantRegU32(cf.MipsS());
+  const u32 denom = GetConstantRegU32(cf.MipsT());
+
+  u32 lo, hi;
+
+  if (denom == 0)
+  {
+    // divide by zero
+    lo = UINT32_C(0xFFFFFFFF);
+    hi = static_cast<u32>(num);
+  }
+  else
+  {
+    lo = num / denom;
+    hi = num % denom;
+  }
+
+  SetConstantReg(Reg::hi, hi);
+  SetConstantReg(Reg::lo, lo);
 }
 
 void CPU::NewRec::Compiler::Compile_add_const(CompileFlags cf)

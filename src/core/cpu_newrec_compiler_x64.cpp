@@ -799,6 +799,83 @@ void CPU::NewRec::X64Compiler::Compile_multu(CompileFlags cf)
   Compile_mult(cf, false);
 }
 
+void CPU::NewRec::X64Compiler::Compile_div(CompileFlags cf)
+{
+  // not supported without registers for now..
+  DebugAssert(cf.valid_host_lo && cf.valid_host_hi);
+
+  const Reg32 rt = cf.valid_host_t ? CFGetRegT(cf) : cg->ecx;
+  if (!cf.valid_host_t)
+    MoveTToReg(rt, cf);
+
+  const Reg32 rlo = CFGetRegLO(cf);
+  const Reg32 rhi = CFGetRegHI(cf);
+
+  MoveSToReg(cg->eax, cf);
+  cg->cdq();
+
+  Label done;
+  Label not_divide_by_zero;
+  cg->test(rt, rt);
+  cg->jnz(not_divide_by_zero, CodeGenerator::T_SHORT);
+  cg->test(cg->eax, cg->eax);
+  cg->mov(rhi, cg->eax); // hi = num
+  cg->mov(rlo, 1);
+  cg->mov(cg->eax, static_cast<u32>(-1));
+  cg->cmovns(rlo, cg->eax); // lo = s >= 0 ? -1 : 1
+  cg->jmp(done, CodeGenerator::T_SHORT);
+
+  cg->L(not_divide_by_zero);
+  Label not_unrepresentable;
+  cg->cmp(cg->eax, 0x80000000u);
+  cg->jne(not_unrepresentable, CodeGenerator::T_SHORT);
+  cg->cmp(rt, static_cast<u32>(-1));
+  cg->jne(not_unrepresentable, CodeGenerator::T_SHORT);
+
+  cg->mov(rlo, 0x80000000u);
+  cg->xor_(rhi, rhi);
+  cg->jmp(done, CodeGenerator::T_SHORT);
+
+  cg->L(not_unrepresentable);
+
+  cg->idiv(rt);
+  cg->mov(rlo, cg->eax);
+  cg->mov(rhi, cg->edx);
+
+  cg->L(done);
+}
+
+void CPU::NewRec::X64Compiler::Compile_divu(CompileFlags cf)
+{
+  // not supported without registers for now..
+  DebugAssert(cf.valid_host_lo && cf.valid_host_hi);
+
+  const Reg32 rt = cf.valid_host_t ? CFGetRegT(cf) : cg->ecx;
+  if (!cf.valid_host_t)
+    MoveTToReg(rt, cf);
+
+  const Reg32 rlo = CFGetRegLO(cf);
+  const Reg32 rhi = CFGetRegHI(cf);
+
+  MoveSToReg(cg->eax, cf);
+  cg->xor_(cg->edx, cg->edx);
+
+  Label done;
+  Label not_divide_by_zero;
+  cg->test(rt, rt);
+  cg->jnz(not_divide_by_zero, CodeGenerator::T_SHORT);
+  cg->mov(rlo, static_cast<u32>(-1));
+  cg->mov(rhi, cg->eax);
+  cg->jmp(done, CodeGenerator::T_SHORT);
+
+  cg->L(not_divide_by_zero);
+  cg->div(rt);
+  cg->mov(rlo, cg->eax);
+  cg->mov(rhi, cg->edx);
+
+  cg->L(done);
+}
+
 void CPU::NewRec::X64Compiler::TestOverflow(const Xbyak::Reg32& result)
 {
   // TODO: far code

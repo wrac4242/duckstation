@@ -266,6 +266,10 @@ protected:
   virtual void Compile_mult(CompileFlags cf) = 0;
   void Compile_multu_const(CompileFlags cf);
   virtual void Compile_multu(CompileFlags cf) = 0;
+  void Compile_div_const(CompileFlags cf);
+  virtual void Compile_div(CompileFlags cf) = 0;
+  void Compile_divu_const(CompileFlags cf);
+  virtual void Compile_divu(CompileFlags cf) = 0;
   void Compile_add_const(CompileFlags cf);
   virtual void Compile_add(CompileFlags cf) = 0;
   void Compile_addu_const(CompileFlags cf);

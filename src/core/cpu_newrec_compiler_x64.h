@@ -70,6 +70,8 @@ protected:
   void Compile_mult(CompileFlags cf, bool sign);
   void Compile_mult(CompileFlags cf) override;
   void Compile_multu(CompileFlags cf) override;
+  void Compile_div(CompileFlags cf) override;
+  void Compile_divu(CompileFlags cf) override;
   void TestOverflow(const Xbyak::Reg32& result);
   void Compile_dst_op(CompileFlags cf, void (Xbyak::CodeGenerator::*op)(const Xbyak::Operand&, const Xbyak::Operand&),
                       void (Xbyak::CodeGenerator::*op_const)(const Xbyak::Operand&, u32), bool commutative, bool overflow);
