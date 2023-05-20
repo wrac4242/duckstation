@@ -293,22 +293,16 @@ void Shutdown()
 }
 
 template<PGXPMode pgxp_mode>
-static void ExecuteImpl()
+[[noreturn]] static void ExecuteImpl()
 {
   CodeBlockKey next_block_key;
 
-  g_using_interpreter = false;
-  g_state.frame_done = false;
-
-  while (!g_state.frame_done)
+  for (;;)
   {
     if (HasPendingInterrupt())
-    {
-      SafeReadInstruction(g_state.regs.pc, &g_state.next_instruction.bits);
       DispatchInterrupt();
-    }
 
-    TimingEvents::UpdateCPUDowncount();
+    TimingEvents::RunEvents();
 
     next_block_key = GetNextBlockKey();
     while (g_state.pending_ticks < g_state.downcount)
@@ -384,15 +378,13 @@ static void ExecuteImpl()
         }
       }
     }
-
-    TimingEvents::RunEvents();
   }
 
   // in case we switch to interpreter...
   g_state.regs.npc = g_state.regs.pc;
 }
 
-void Execute()
+[[noreturn]] void Execute()
 {
   if (g_settings.gpu_pgxp_enable)
   {
@@ -432,19 +424,13 @@ FastMapTable* GetFastMapPointer()
 
 void ExecuteRecompiler()
 {
-  g_using_interpreter = false;
-  g_state.frame_done = false;
-
 #if 0
-  while (!g_state.frame_done)
+  for (;;)
   {
     if (HasPendingInterrupt())
-    {
-      SafeReadInstruction(g_state.regs.pc, &g_state.next_instruction.bits);
       DispatchInterrupt();
-    }
 
-    TimingEvents::UpdateCPUDowncount();
+    TimingEvents::RunEvents();
 
     while (g_state.pending_ticks < g_state.downcount)
     {
@@ -455,14 +441,13 @@ void ExecuteRecompiler()
       const u32 pc = g_state.regs.pc;
       s_single_block_asm_dispatcher(s_fast_map[pc >> 16][pc >> 2]);
     }
-
-    TimingEvents::RunEvents();
   }
 #else
   s_asm_dispatcher();
 #endif
 
   // in case we switch to interpreter...
+  // TODO: fixme
   g_state.regs.npc = g_state.regs.pc;
 }
 

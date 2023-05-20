@@ -86,7 +86,8 @@ enum class State
   Shutdown,
   Starting,
   Running,
-  Paused
+  Paused,
+  Stopping,
 };
 
 using GameHash = u64;
@@ -176,7 +177,7 @@ bool InjectEXEFromBuffer(const void* buffer, u32 buffer_size, bool patch_loader 
 
 u32 GetFrameNumber();
 u32 GetInternalFrameNumber();
-void FrameDone();
+void VBlankStart();
 void IncrementInternalFrameNumber();
 
 const std::string& GetDiscPath();
@@ -238,8 +239,6 @@ void RecreateSystem();
 bool RecreateGPU(GPURenderer renderer, bool force_recreate_display = false, bool update_display = true);
 
 void SingleStepCPU();
-void RunFrame();
-void RunFrames();
 
 /// Sets target emulation speed.
 float GetTargetSpeed();
@@ -250,9 +249,6 @@ void SetThrottleFrequency(float frequency);
 /// Updates the throttle period, call when target emulation speed changes.
 void UpdateThrottlePeriod();
 void ResetThrottler();
-
-/// Throttles the system, i.e. sleeps until it's time to execute the next frame.
-void Throttle();
 
 void UpdatePerformanceCounters();
 void ResetPerformanceCounters();
@@ -487,7 +483,7 @@ void OnPerformanceCountersUpdated();
 void OnGameChanged(const std::string& disc_path, const std::string& game_serial, const std::string& game_name);
 
 /// Provided by the host; called once per frame at guest vsync.
-void PumpMessagesOnCPUThread();
+void OnVBlankStart();
 
 /// Requests a specific display window size.
 void RequestResizeHostDisplay(s32 width, s32 height);

@@ -66,13 +66,11 @@ struct State
   bool next_instruction_is_branch_delay_slot = false;
   bool branch_was_taken = false;
   bool exception_raised = false;
-  bool interrupt_delay = false;
-  bool frame_done = false;
 
   // load delays
   Reg load_delay_reg = Reg::count;
-  u32 load_delay_value = 0;
   Reg next_load_delay_reg = Reg::count;
+  u32 load_delay_value = 0;
   u32 next_load_delay_value = 0;
 
   CacheControl cache_control{0};
@@ -95,7 +93,6 @@ struct State
 };
 
 extern State g_state;
-extern bool g_using_interpreter;
 
 void Initialize();
 void Shutdown();
@@ -106,11 +103,11 @@ void UpdateFastmemBase();
 
 /// Executes interpreter loop.
 void Execute();
-void ExecuteDebug();
 void SingleStep();
+void RunEvents();
 
 // Forces an early exit from the CPU dispatcher.
-void ForceDispatcherExit();
+void ExitExecution();
 
 ALWAYS_INLINE Registers& GetRegs()
 {

@@ -103,9 +103,11 @@ static void DestroySystem();
 static std::string GetMediaPathFromSaveState(const char* path);
 static bool DoLoadState(ByteStream* stream, bool force_software_renderer, bool update_display);
 static bool DoState(StateWrapper& sw, GPUTexture** host_texture, bool update_display, bool is_memory_state);
-static void DoRunFrame();
 static bool CreateGPU(GPURenderer renderer);
 static bool SaveUndoLoadState();
+
+/// Throttles the system, i.e. sleeps until it's time to execute the next frame.
+static void Throttle();
 
 static void SetRewinding(bool enabled);
 static bool SaveRewindState();
@@ -156,7 +158,9 @@ static float s_throttle_frequency = 60.0f;
 static float s_target_speed = 1.0f;
 static Common::Timer::Value s_frame_period = 0;
 static Common::Timer::Value s_next_frame_time = 0;
+static bool s_last_frame_skipped = false;
 
+static bool s_system_executing = false;
 static bool s_frame_step_request = false;
 static bool s_fast_forward_enabled = false;
 static bool s_turbo_enabled = false;
@@ -229,9 +233,6 @@ void System::SetState(State new_state)
   Assert(s_state == State::Paused || s_state == State::Running);
   Assert(new_state == State::Paused || new_state == State::Running);
   s_state = new_state;
-
-  if (new_state == State::Paused)
-    CPU::ForceDispatcherExit();
 }
 
 bool System::IsRunning()
@@ -304,18 +305,6 @@ u32 System::GetFrameNumber()
 u32 System::GetInternalFrameNumber()
 {
   return s_internal_frame_number;
-}
-
-void System::FrameDone()
-{
-  s_frame_number++;
-  CPU::g_state.frame_done = true;
-  CPU::g_state.downcount = 0;
-}
-
-void System::IncrementInternalFrameNumber()
-{
-  s_internal_frame_number++;
 }
 
 const std::string& System::GetDiscPath()
@@ -894,7 +883,11 @@ void System::ApplySettings(bool display_osd_messages)
   Host::CheckForSettingsChanges(old_config);
 
   if (IsValid())
+  {
     ResetPerformanceCounters();
+    if (s_system_executing)
+      CPU::ExitExecution();
+  }
 }
 
 bool System::ReloadGameSettings(bool display_osd_messages)
@@ -1505,6 +1498,7 @@ bool System::Initialize(bool force_software_renderer)
 
 void System::DestroySystem()
 {
+  DebugAssert(!s_system_executing);
   if (s_state == State::Shutdown)
     return;
 
@@ -1546,6 +1540,9 @@ void System::DestroySystem()
   s_bios_hash = {};
   s_bios_image_info = nullptr;
   s_was_fast_booted = false;
+  s_cheat_list.reset();
+
+  s_state = State::Shutdown;
 
   Host::OnSystemDestroyed();
 }
@@ -1557,8 +1554,6 @@ void System::ClearRunningGame()
   s_running_game_title.clear();
   s_running_game_hash = 0;
   s_running_unknown_game = false;
-  s_cheat_list.reset();
-  s_state = State::Shutdown;
 
   Host::OnGameChanged(s_running_game_path, s_running_game_serial, s_running_game_title);
 
@@ -1578,7 +1573,8 @@ bool System::FastForwardToFirstFrame()
   while (s_internal_frame_number == current_internal_frame_number &&
          (s_frame_number - current_frame_number) <= MAX_FRAMES_TO_SKIP)
   {
-    System::RunFrame();
+    Panic("Fixme");
+    // System::RunFrame();
   }
   SPU::SetAudioOutputMuted(false);
 
@@ -1587,23 +1583,49 @@ bool System::FastForwardToFirstFrame()
 
 void System::Execute()
 {
-  while (System::IsRunning())
+  for (;;)
   {
-    if (s_display_all_frames)
-      System::RunFrame();
-    else
-      System::RunFrames();
-
-    // this can shut us down
-    Host::PumpMessagesOnCPUThread();
-    if (!IsValid())
-      return;
-
-    if (s_frame_step_request)
+    switch (s_state)
     {
-      s_frame_step_request = false;
-      PauseSystem(true);
+      case State::Running:
+      {
+        s_system_executing = true;
+
+        // TODO: Purge reset/restore
+        g_gpu->RestoreGraphicsAPIState();
+
+        CPU::Execute();
+
+        g_gpu->ResetGraphicsAPIState();
+
+        s_system_executing = false;
+        continue;
+      }
+
+      case State::Stopping:
+      {
+        DestroySystem();
+        return;
+      }
+
+      case State::Paused:
+      default:
+        return;
     }
+  }
+}
+
+void System::VBlankStart()
+{
+  s_frame_number++;
+
+  const Common::Timer::Value current_time = Common::Timer::GetCurrentValue();
+  if (current_time < s_next_frame_time || s_display_all_frames || s_last_frame_skipped)
+  {
+    s_last_frame_skipped = false;
+
+    // TODO: Purge reset/restore
+    g_gpu->ResetGraphicsAPIState();
 
     const bool skip_present = g_host_display->ShouldSkipDisplayingFrame();
     Host::RenderDisplay(skip_present);
@@ -1613,14 +1635,115 @@ void System::Execute()
       s_presents_since_last_update++;
     }
 
-    if (s_throttler_enabled)
-      System::Throttle();
-
-    // Update perf counters *after* throttling, we want to measure from start-of-frame
-    // to start-of-frame, not end-of-frame to end-of-frame (will be noisy due to different
-    // amounts of computation happening in each frame).
-    System::UpdatePerformanceCounters();
+    g_gpu->RestoreGraphicsAPIState();
   }
+  else if (current_time >= s_next_frame_time)
+  {
+    Log_DebugPrintf("Skipping displaying frame");
+    s_last_frame_skipped = true;
+  }
+
+  // Generate any pending samples from the SPU before sleeping, this way we reduce the chances of underruns.
+  SPU::GeneratePendingSamples();
+
+  if (s_cheat_list)
+    s_cheat_list->Apply();
+
+  if (s_frame_step_request)
+  {
+    s_frame_step_request = false;
+    PauseSystem(true);
+  }
+
+  // TODO: this will affect input latency
+  if (s_throttler_enabled)
+    Throttle();
+
+  // this can shut us down
+  Host::OnVBlankStart();
+
+  if (!IsRunning())
+  {
+    CPU::ExitExecution();
+    return;
+  }
+
+  // Update perf counters *after* throttling, we want to measure from start-of-frame
+  // to start-of-frame, not end-of-frame to end-of-frame (will be noisy due to different
+  // amounts of computation happening in each frame).
+  System::UpdatePerformanceCounters();
+}
+
+void System::SetThrottleFrequency(float frequency)
+{
+  s_throttle_frequency = frequency;
+  UpdateThrottlePeriod();
+}
+
+void System::UpdateThrottlePeriod()
+{
+  if (s_target_speed > std::numeric_limits<double>::epsilon())
+  {
+    const double target_speed = std::max(static_cast<double>(s_target_speed), std::numeric_limits<double>::epsilon());
+    s_frame_period =
+      Common::Timer::ConvertSecondsToValue(1.0 / (static_cast<double>(s_throttle_frequency) * target_speed));
+  }
+  else
+  {
+    s_frame_period = 1;
+  }
+
+  ResetThrottler();
+}
+
+void System::ResetThrottler()
+{
+  s_next_frame_time = Common::Timer::GetCurrentValue() + s_frame_period;
+}
+
+void System::Throttle()
+{
+  // If we're running too slow, advance the next frame time based on the time we lost. Effectively skips
+  // running those frames at the intended time, because otherwise if we pause in the debugger, we'll run
+  // hundreds of frames when we resume.
+  Common::Timer::Value current_time = Common::Timer::GetCurrentValue();
+  if (current_time > s_next_frame_time)
+  {
+    const Common::Timer::Value diff = static_cast<s64>(current_time) - static_cast<s64>(s_next_frame_time);
+    s_next_frame_time += (diff / s_frame_period) * s_frame_period + s_frame_period;
+    return;
+  }
+
+  // Use a spinwait if we undersleep for all platforms except android.. don't want to burn battery.
+  // Linux also seems to do a much better job of waking up at the requested time.
+#if !defined(__linux__) && !defined(__ANDROID__)
+  Common::Timer::SleepUntil(s_next_frame_time, g_settings.display_all_frames);
+#else
+  Common::Timer::SleepUntil(s_next_frame_time, false);
+#endif
+
+  s_next_frame_time += s_frame_period;
+}
+
+void System::SingleStepCPU()
+{
+  s_frame_timer.Reset();
+  s_system_executing = true;
+
+  g_gpu->RestoreGraphicsAPIState();
+
+  CPU::SingleStep();
+
+  SPU::GeneratePendingSamples();
+
+  g_gpu->ResetGraphicsAPIState();
+
+  s_system_executing = false;
+}
+
+void System::IncrementInternalFrameNumber()
+{
+  s_internal_frame_number++;
 }
 
 void System::RecreateSystem()
@@ -2199,157 +2322,9 @@ bool System::InternalSaveState(ByteStream* state, u32 screenshot_size /* = 256 *
   return true;
 }
 
-void System::SingleStepCPU()
-{
-  const u32 old_frame_number = s_frame_number;
-
-  s_frame_timer.Reset();
-
-  g_gpu->RestoreGraphicsAPIState();
-
-  CPU::SingleStep();
-
-  SPU::GeneratePendingSamples();
-
-  if (s_frame_number != old_frame_number && s_cheat_list)
-    s_cheat_list->Apply();
-
-  g_gpu->ResetGraphicsAPIState();
-}
-
-void System::DoRunFrame()
-{
-  g_gpu->RestoreGraphicsAPIState();
-
-  if (CPU::g_state.use_debug_dispatcher)
-  {
-    CPU::ExecuteDebug();
-  }
-  else
-  {
-    switch (g_settings.cpu_execution_mode)
-    {
-      case CPUExecutionMode::Recompiler:
-#ifdef WITH_RECOMPILER
-        CPU::CodeCache::ExecuteRecompiler();
-#else
-        CPU::CodeCache::Execute();
-#endif
-        break;
-
-      case CPUExecutionMode::CachedInterpreter:
-        CPU::CodeCache::Execute();
-        break;
-
-      case CPUExecutionMode::Interpreter:
-      default:
-        CPU::Execute();
-        break;
-    }
-  }
-
-  // Generate any pending samples from the SPU before sleeping, this way we reduce the chances of underruns.
-  SPU::GeneratePendingSamples();
-
-  if (s_cheat_list)
-    s_cheat_list->Apply();
-
-  g_gpu->ResetGraphicsAPIState();
-}
-
-void System::RunFrame()
-{
-  if (s_rewind_load_counter >= 0)
-  {
-    DoRewind();
-    return;
-  }
-
-  if (s_runahead_frames > 0)
-    DoRunahead();
-
-  DoRunFrame();
-
-  s_next_frame_time += s_frame_period;
-
-  if (s_memory_saves_enabled)
-    DoMemorySaveStates();
-}
-
 float System::GetTargetSpeed()
 {
   return s_target_speed;
-}
-
-void System::SetThrottleFrequency(float frequency)
-{
-  s_throttle_frequency = frequency;
-  UpdateThrottlePeriod();
-}
-
-void System::UpdateThrottlePeriod()
-{
-  if (s_target_speed > std::numeric_limits<double>::epsilon())
-  {
-    const double target_speed = std::max(static_cast<double>(s_target_speed), std::numeric_limits<double>::epsilon());
-    s_frame_period =
-      Common::Timer::ConvertSecondsToValue(1.0 / (static_cast<double>(s_throttle_frequency) * target_speed));
-  }
-  else
-  {
-    s_frame_period = 1;
-  }
-
-  ResetThrottler();
-}
-
-void System::ResetThrottler()
-{
-  s_next_frame_time = Common::Timer::GetCurrentValue();
-}
-
-void System::Throttle()
-{
-  // If we're running too slow, advance the next frame time based on the time we lost. Effectively skips
-  // running those frames at the intended time, because otherwise if we pause in the debugger, we'll run
-  // hundreds of frames when we resume.
-  Common::Timer::Value current_time = Common::Timer::GetCurrentValue();
-  if (current_time > s_next_frame_time)
-  {
-    const Common::Timer::Value diff = static_cast<s64>(current_time) - static_cast<s64>(s_next_frame_time);
-    s_next_frame_time += (diff / s_frame_period) * s_frame_period;
-    return;
-  }
-
-  // Use a spinwait if we undersleep for all platforms except android.. don't want to burn battery.
-  // Linux also seems to do a much better job of waking up at the requested time.
-#if !defined(__linux__) && !defined(__ANDROID__)
-  Common::Timer::SleepUntil(s_next_frame_time, g_settings.display_all_frames);
-#else
-  Common::Timer::SleepUntil(s_next_frame_time, false);
-#endif
-}
-
-void System::RunFrames()
-{
-  // If we're running more than this in a single loop... we're in for a bad time.
-  const u32 max_frames_to_run = 2;
-  u32 frames_run = 0;
-
-  Common::Timer::Value value = Common::Timer::GetCurrentValue();
-  while (frames_run < max_frames_to_run)
-  {
-    if (value < s_next_frame_time)
-      break;
-
-    RunFrame();
-    frames_run++;
-
-    value = Common::Timer::GetCurrentValue();
-  }
-
-  if (frames_run != 1)
-    Log_VerbosePrintf("Ran %u frames in a single host frame", frames_run);
 }
 
 void System::UpdatePerformanceCounters()
@@ -3751,7 +3726,7 @@ void System::DoRunahead()
 
     while (frames_to_run > 0)
     {
-      DoRunFrame();
+      // DoRunFrame();
       SaveRunaheadState();
       frames_to_run--;
     }
@@ -3812,7 +3787,10 @@ void System::ShutdownSystem(bool save_resume_state)
   if (save_resume_state)
     SaveResumeState();
 
-  DestroySystem();
+  if (s_system_executing)
+    s_state = State::Stopping;
+  else
+    DestroySystem();
 }
 
 bool System::CanUndoLoadState()

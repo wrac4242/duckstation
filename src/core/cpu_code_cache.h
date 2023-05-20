@@ -121,7 +121,7 @@ using FastMapTable = CodeBlock::HostCodePointer*;
 
 void Initialize();
 void Shutdown();
-void Execute();
+[[noreturn]] void Execute();
 
 #ifdef WITH_RECOMPILER
 using DispatcherFunction = void (*)();

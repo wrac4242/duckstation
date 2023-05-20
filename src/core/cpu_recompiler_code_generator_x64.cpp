@@ -3025,12 +3025,7 @@ CodeCache::DispatcherFunction CodeGenerator::CompileDispatcher()
   EmitLoadGlobalAddress(Xbyak::Operand::RBP, &g_state);
 
   Xbyak::Label frame_done_loop;
-  Xbyak::Label exit_dispatcher;
   m_emit->L(frame_done_loop);
-
-  // if frame_done goto exit_dispatcher
-  m_emit->test(m_emit->byte[m_emit->rbp + offsetof(State, frame_done)], 1);
-  m_emit->jnz(exit_dispatcher, Xbyak::CodeGenerator::T_NEAR);
 
   // eax <- sr
   Xbyak::Label no_interrupt;
@@ -3102,7 +3097,6 @@ CodeCache::DispatcherFunction CodeGenerator::CompileDispatcher()
   m_emit->jmp(frame_done_loop);
 
   // all done
-  m_emit->L(exit_dispatcher);
   RestoreStackAfterCall(stack_adjust);
   m_register_cache.PopCalleeSavedRegisters(true);
   m_emit->ret();

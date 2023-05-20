@@ -249,7 +249,7 @@ void Host::OnGameChanged(const std::string& disc_path, const std::string& game_s
   }
 }
 
-void Host::PumpMessagesOnCPUThread()
+void Host::OnVBlankStart()
 {
   //
 }

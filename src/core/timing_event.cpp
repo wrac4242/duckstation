@@ -17,6 +17,7 @@ static TimingEvent* s_active_events_tail;
 static TimingEvent* s_current_event = nullptr;
 static u32 s_active_event_count = 0;
 static u32 s_global_tick_counter = 0;
+static bool s_interrupted = false;
 
 u32 GetGlobalTickCounter()
 {
@@ -51,10 +52,7 @@ std::unique_ptr<TimingEvent> CreateTimingEvent(std::string name, TickCount perio
 
 void UpdateCPUDowncount()
 {
-  if (!CPU::g_state.frame_done && (!CPU::HasPendingInterrupt() || CPU::g_using_interpreter))
-  {
-    CPU::g_state.downcount = s_active_events_head->GetDowncount();
-  }
+  CPU::g_state.downcount = CPU::HasPendingInterrupt() ? 0 : s_active_events_head->GetDowncount();
 }
 
 TimingEvent** GetHeadEventPtr()
@@ -260,6 +258,16 @@ static TimingEvent* FindActiveEvent(const char* name)
   return nullptr;
 }
 
+bool IsRunningEvents()
+{
+  return (s_current_event != nullptr);
+}
+
+void SetInterrupted()
+{
+  s_interrupted = true;
+}
+
 void RunEvents()
 {
   DebugAssert(!s_current_event);
@@ -302,6 +310,12 @@ void RunEvents()
 
   s_current_event = nullptr;
   UpdateCPUDowncount();
+
+  if (s_interrupted)
+  {
+    s_interrupted = false;
+    CPU::ExitExecution();
+  }
 }
 
 bool DoState(StateWrapper& sw)

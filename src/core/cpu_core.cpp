@@ -4,6 +4,7 @@
 #include "cpu_core.h"
 #include "bus.h"
 #include "common/align.h"
+#include "common/fastjmp.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "cpu_core_private.h"
@@ -29,8 +30,9 @@ static void Branch(u32 target);
 static void FlushPipeline();
 
 State g_state;
-bool g_using_interpreter = false;
 bool TRACE_EXECUTION = false;
+
+static fastjmp_buf s_jmp_buf;
 
 static std::FILE* s_log_file = nullptr;
 static bool s_log_file_opened = false;
@@ -41,6 +43,7 @@ static std::vector<Breakpoint> s_breakpoints;
 static u32 s_breakpoint_counter = 1;
 static u32 s_last_breakpoint_check_pc = INVALID_BREAKPOINT_PC;
 static bool s_single_step = false;
+static bool s_single_step_done = false;
 
 bool IsTraceEnabled()
 {
@@ -161,7 +164,11 @@ bool DoState(StateWrapper& sw)
   sw.Do(&g_state.next_instruction_is_branch_delay_slot);
   sw.Do(&g_state.branch_was_taken);
   sw.Do(&g_state.exception_raised);
-  sw.Do(&g_state.interrupt_delay);
+  if (sw.GetVersion() < 59)
+  {
+    bool interrupt_delay;
+    sw.Do(&interrupt_delay);
+  }
   sw.Do(&g_state.load_delay_reg);
   sw.Do(&g_state.load_delay_value);
   sw.Do(&g_state.next_load_delay_reg);
@@ -311,16 +318,7 @@ void RaiseBreakException(u32 CAUSE_bits, u32 EPC, u32 instruction_bits)
 void SetExternalInterrupt(u8 bit)
 {
   g_state.cop0_regs.cause.Ip |= static_cast<u8>(1u << bit);
-
-  if (g_settings.cpu_execution_mode == CPUExecutionMode::Interpreter)
-  {
-    g_state.interrupt_delay = 1;
-  }
-  else
-  {
-    g_state.interrupt_delay = 0;
-    CheckForPendingInterrupt();
-  }
+  CheckForPendingInterrupt();
 }
 
 void ClearExternalInterrupt(u8 bit)
@@ -1763,14 +1761,16 @@ void UpdateDebugDispatcherFlag()
 
   Log_DevPrintf("%s debug dispatcher", use_debug_dispatcher ? "Now using" : "No longer using");
   g_state.use_debug_dispatcher = use_debug_dispatcher;
-  ForceDispatcherExit();
+  ExitExecution();
 }
 
-void ForceDispatcherExit()
+void ExitExecution()
 {
-  // zero the downcount so we break out and switch
-  g_state.downcount = 0;
-  g_state.frame_done = true;
+  // can't exit while running events without messing things up
+  if (TimingEvents::IsRunningEvents())
+    TimingEvents::SetInterrupted();
+  else
+    fastjmp_jmp(&s_jmp_buf, 1);
 }
 
 bool HasAnyBreakpoints()
@@ -1942,8 +1942,11 @@ ALWAYS_INLINE_RELEASE static bool BreakpointCheck()
   // the bp check happens just before execution, so this is fine
   if (s_single_step)
   {
-    ForceDispatcherExit();
-    s_single_step = false;
+    if (s_single_step_done)
+      ExitExecution();
+    else
+      s_single_step_done = true;
+
     s_last_breakpoint_check_pc = pc;
     return false;
   }
@@ -2004,19 +2007,17 @@ ALWAYS_INLINE_RELEASE static bool BreakpointCheck()
 }
 
 template<PGXPMode pgxp_mode, bool debug>
-static void ExecuteImpl()
+[[noreturn]] static void ExecuteImpl()
 {
-  g_using_interpreter = true;
-  g_state.frame_done = false;
-  while (!g_state.frame_done)
+  for (;;)
   {
-    TimingEvents::UpdateCPUDowncount();
+    if (HasPendingInterrupt())
+      DispatchInterrupt();
+
+    TimingEvents::RunEvents();
 
     while (g_state.pending_ticks < g_state.downcount)
     {
-      if (HasPendingInterrupt() && !g_state.interrupt_delay)
-        DispatchInterrupt();
-
       if constexpr (debug)
       {
         Cop0ExecutionBreakpointCheck();
@@ -2028,7 +2029,6 @@ static void ExecuteImpl()
         }
       }
 
-      g_state.interrupt_delay = false;
       g_state.pending_ticks++;
 
       // now executing the instruction we previously fetched
@@ -2065,27 +2065,10 @@ static void ExecuteImpl()
       // next load delay
       UpdateLoadDelay();
     }
-
-    TimingEvents::RunEvents();
   }
 }
 
-void Execute()
-{
-  if (g_settings.gpu_pgxp_enable)
-  {
-    if (g_settings.gpu_pgxp_cpu)
-      ExecuteImpl<PGXPMode::CPU, false>();
-    else
-      ExecuteImpl<PGXPMode::Memory, false>();
-  }
-  else
-  {
-    ExecuteImpl<PGXPMode::Disabled, false>();
-  }
-}
-
-void ExecuteDebug()
+static void ExecuteDebug()
 {
   if (g_settings.gpu_pgxp_enable)
   {
@@ -2100,10 +2083,50 @@ void ExecuteDebug()
   }
 }
 
+void Execute()
+{
+  if (fastjmp_set(&s_jmp_buf) != 0)
+    return;
+
+  if (g_state.use_debug_dispatcher)
+  {
+    ExecuteDebug();
+    return;
+  }
+
+  switch (g_settings.cpu_execution_mode)
+  {
+    case CPUExecutionMode::Recompiler:
+      CodeCache::ExecuteRecompiler();
+      break;
+
+    case CPUExecutionMode::CachedInterpreter:
+      CodeCache::Execute();
+      break;
+
+    case CPUExecutionMode::Interpreter:
+    default:
+    {
+      if (g_settings.gpu_pgxp_enable)
+      {
+        if (g_settings.gpu_pgxp_cpu)
+          ExecuteImpl<PGXPMode::CPU, false>();
+        else
+          ExecuteImpl<PGXPMode::Memory, false>();
+      }
+      else
+      {
+        ExecuteImpl<PGXPMode::Disabled, false>();
+      }
+    }
+    break;
+  }
+}
+
 void SingleStep()
 {
-  s_single_step = true;
-  ExecuteDebug();
+  if (fastjmp_set(&s_jmp_buf) == 0)
+    ExecuteDebug();
   Host::ReportFormattedDebuggerMessage("Stepped to 0x%08X.", g_state.regs.pc);
 }
 

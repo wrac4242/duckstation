@@ -1706,7 +1706,7 @@ void Host::SetMouseMode(bool relative, bool hide_cursor)
   emit g_emu_thread->mouseModeRequested(relative, hide_cursor);
 }
 
-void Host::PumpMessagesOnCPUThread()
+void Host::OnVBlankStart()
 {
   g_emu_thread->getEventLoop()->processEvents(QEventLoop::AllEvents);
   CommonHost::PumpMessagesOnCPUThread(); // calls InputManager::PollSources()

@@ -903,7 +903,7 @@ void GPU::CRTCTickEvent(TickCount ticks)
         // flush any pending draws and "scan out" the image
         FlushRender();
         UpdateDisplay();
-        System::FrameDone();
+        System::VBlankStart();
 
         // switch fields early. this is needed so we draw to the correct one.
         if (m_GPUSTAT.InInterleaved480iMode())
