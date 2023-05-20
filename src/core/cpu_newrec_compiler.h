@@ -52,22 +52,22 @@ protected:
   {
     struct
     {
-      u32 const_s : 1; // S is constant
-      u32 const_t : 1; // T is constant
+      u32 const_s : 1;  // S is constant
+      u32 const_t : 1;  // T is constant
       u32 const_lo : 1; // LO is constant
       u32 const_hi : 1; // HI is constant
 
-      u32 valid_host_d : 1; // D is valid in host register
-      u32 valid_host_s : 1; // S is valid in host register
-      u32 valid_host_t : 1; // T is valid in host register
+      u32 valid_host_d : 1;  // D is valid in host register
+      u32 valid_host_s : 1;  // S is valid in host register
+      u32 valid_host_t : 1;  // T is valid in host register
       u32 valid_host_lo : 1; // LO is valid in host register
       u32 valid_host_hi : 1; // HI is valid in host register
 
       u32 delay_slot_swapped : 1;
 
-      u32 host_d : 5; // D host register
-      u32 host_s : 5; // S host register
-      u32 host_t : 5; // T host register
+      u32 host_d : 5;  // D host register
+      u32 host_s : 5;  // S host register
+      u32 host_t : 5;  // T host register
       u32 host_lo : 5; // LO host register
 
       u32 pad1 : 2; // 28..31
@@ -136,7 +136,7 @@ protected:
   {
     u8 flags;
     HostRegAllocType type;
-    s8 reg; // guest register TODO make Reg
+    Reg reg;
     u16 counter;
   };
 
@@ -185,14 +185,13 @@ protected:
   static const char* GetReadWriteModeString(u32 flags);
   virtual const char* GetHostRegName(u32 reg) const;
   std::optional<u32> GetFreeHostReg(u32 flags);
-  u32 AllocateHostReg(u32 flags, HostRegAllocType type = HR_TYPE_TEMP, s8 reg = -1);
-  std::optional<u32> CheckHostReg(u32 flags, HostRegAllocType type = HR_TYPE_TEMP,
-                                  s8 reg = -1); // TODO: change type to Reg
+  u32 AllocateHostReg(u32 flags, HostRegAllocType type = HR_TYPE_TEMP, Reg reg = Reg::count);
+  std::optional<u32> CheckHostReg(u32 flags, HostRegAllocType type = HR_TYPE_TEMP, Reg reg = Reg::count);
   void FlushHostReg(u32 reg);
   void FreeHostReg(u32 reg);
   void ClearHostReg(u32 reg);
-  void MarkRegsNeeded(HostRegAllocType type, s8 reg);
-  void RenameHostReg(u32 reg, u32 new_flags, HostRegAllocType new_type, s8 new_reg);
+  void MarkRegsNeeded(HostRegAllocType type, Reg reg);
+  void RenameHostReg(u32 reg, u32 new_flags, HostRegAllocType new_type, Reg new_reg);
   void ClearHostRegNeeded(u32 reg);
   void ClearHostRegsNeeded();
   void DeleteMIPSReg(Reg reg, bool flush);
@@ -356,7 +355,7 @@ protected:
     Reg next_load_delay_register;
     u32 next_load_delay_value_register;
   };
-  
+
   // we need two of these, one for branch delays, and another if we have an overflow in the delay slot
   std::array<HostStateBackup, 2> m_host_state_backup = {};
   u32 m_host_state_backup_count = 0;

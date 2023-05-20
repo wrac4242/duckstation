@@ -103,14 +103,14 @@ const void* CPU::NewRec::Compiler::CompileBlock(Block* block)
 void CPU::NewRec::Compiler::SetConstantReg(Reg r, u32 v)
 {
   DebugAssert(r < Reg::count && r != Reg::zero);
-  if (m_constant_regs_valid.test(static_cast<u32>(r)) && m_constant_reg_values[static_cast<u32>(r)] == v)
+  if (m_constant_regs_valid.test(static_cast<u32>(r)) && m_constant_reg_values[static_cast<u8>(r)] == v)
     return;
 
   m_constant_reg_values[static_cast<u32>(r)] = v;
   m_constant_regs_valid.set(static_cast<u32>(r));
   m_constant_regs_dirty.set(static_cast<u32>(r));
 
-  if (const std::optional<u32> hostreg = CheckHostReg(0, HR_TYPE_CPU_REG, static_cast<s8>(r)); hostreg.has_value())
+  if (const std::optional<u32> hostreg = CheckHostReg(0, HR_TYPE_CPU_REG, r); hostreg.has_value())
   {
     Log_DebugPrintf("Discarding guest register %s in host register %s due to constant set", GetRegName(r),
                     GetHostRegName(hostreg.value()));
@@ -151,7 +151,7 @@ void CPU::NewRec::Compiler::UpdateLoadDelay()
     // if it somehow got flushed, read it back in.
     if (m_next_load_delay_value_register == NUM_HOST_REGS)
     {
-      AllocateHostReg(HR_MODE_READ, HR_TYPE_NEXT_LOAD_DELAY_VALUE, static_cast<u8>(m_next_load_delay_register));
+      AllocateHostReg(HR_MODE_READ, HR_TYPE_NEXT_LOAD_DELAY_VALUE, m_next_load_delay_register);
       DebugAssert(m_next_load_delay_value_register != NUM_HOST_REGS);
     }
 
@@ -175,7 +175,7 @@ void CPU::NewRec::Compiler::FinishLoadDelay()
   // we may need to reload the value..
   if (m_load_delay_value_register == NUM_HOST_REGS)
   {
-    AllocateHostReg(HR_MODE_READ, HR_TYPE_LOAD_DELAY_VALUE, static_cast<s8>(m_load_delay_register));
+    AllocateHostReg(HR_MODE_READ, HR_TYPE_LOAD_DELAY_VALUE, m_load_delay_register);
     DebugAssert(m_load_delay_value_register != NUM_HOST_REGS);
   }
 
@@ -187,7 +187,7 @@ void CPU::NewRec::Compiler::FinishLoadDelay()
 
   // and swap the mode over so it gets written back later
   HostRegAlloc& ra = m_host_regs[m_load_delay_value_register];
-  DebugAssert(ra.reg == static_cast<s8>(m_load_delay_register));
+  DebugAssert(ra.reg == m_load_delay_register);
   ra.flags = (ra.flags & IMMUTABLE_HR_FLAGS) | HR_ALLOCATED | HR_MODE_READ | HR_MODE_WRITE;
   ra.counter = m_register_alloc_counter++;
   ra.type = HR_TYPE_CPU_REG;
@@ -283,7 +283,7 @@ std::optional<u32> CPU::NewRec::Compiler::GetFreeHostReg(u32 flags)
     case HR_TYPE_CPU_REG:
     {
       Log_DebugPrintf("Freeing register %s in host register %s due for allocation", GetHostRegName(lowest),
-                      GetRegName(static_cast<Reg>(ra.reg)));
+                      GetRegName(ra.reg));
     }
     break;
     default:
@@ -309,12 +309,12 @@ const char* CPU::NewRec::Compiler::GetReadWriteModeString(u32 flags)
     return "UNKNOWN";
 }
 
-u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* = HOST_REG_ALLOC_TYPE_TEMP */,
-                                           s8 reg /* = -1 */)
+u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* = HR_TYPE_TEMP */,
+                                           Reg reg /* = Reg::count */)
 {
   // Cancel any load delays before booting anything out
   if (flags & HR_MODE_WRITE && (type == HR_TYPE_CPU_REG || type == HR_TYPE_NEXT_LOAD_DELAY_VALUE))
-    CancelLoadDelaysToReg(static_cast<Reg>(reg));
+    CancelLoadDelaysToReg(reg);
 
   // Already have a matching type?
   std::optional<u32> hreg;
@@ -345,37 +345,37 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
   {
     case HR_TYPE_CPU_REG:
     {
-      DebugAssert(reg != static_cast<s8>(Reg::zero));
+      DebugAssert(reg != Reg::zero);
 
-      Log_DebugPrintf("Allocate host reg %s to guest reg %s in %s mode", GetHostRegName(hreg.value()),
-                      GetRegName(static_cast<Reg>(reg)), GetReadWriteModeString(flags));
+      Log_DebugPrintf("Allocate host reg %s to guest reg %s in %s mode", GetHostRegName(hreg.value()), GetRegName(reg),
+                      GetReadWriteModeString(flags));
 
       if (flags & HR_MODE_READ)
       {
-        DebugAssert(ra.reg >= 0 && ra.reg < static_cast<s8>(Reg::count));
+        DebugAssert(ra.reg > Reg::zero && ra.reg < Reg::count);
 
-        if (HasConstantReg(static_cast<Reg>(reg)))
+        if (HasConstantReg(reg))
         {
           // may as well flush it now
-          Log_DebugPrintf("Flush constant register in guest reg %s to host reg %s", GetRegName(static_cast<Reg>(reg)),
+          Log_DebugPrintf("Flush constant register in guest reg %s to host reg %s", GetRegName(reg),
                           GetHostRegName(hreg.value()));
-          LoadHostRegWithConstant(hreg.value(), GetConstantRegU32(static_cast<Reg>(reg)));
-          m_constant_regs_dirty.reset(reg);
+          LoadHostRegWithConstant(hreg.value(), GetConstantRegU32(reg));
+          m_constant_regs_dirty.reset(static_cast<u8>(reg));
           ra.flags |= HR_MODE_WRITE;
         }
         else
         {
-          LoadHostRegFromCPUPointer(hreg.value(), &g_state.regs.r[reg]);
+          LoadHostRegFromCPUPointer(hreg.value(), &g_state.regs.r[static_cast<u8>(reg)]);
         }
       }
 
-      if (flags & HR_MODE_WRITE && HasConstantReg(static_cast<Reg>(reg)))
+      if (flags & HR_MODE_WRITE && HasConstantReg(reg))
       {
-        DebugAssert(reg != static_cast<s8>(Reg::zero));
-        Log_DebugPrintf("Clearing constant register in guest reg %s due to write mode in %s",
-                        GetRegName(static_cast<Reg>(reg)), GetHostRegName(hreg.value()));
+        DebugAssert(reg != Reg::zero);
+        Log_DebugPrintf("Clearing constant register in guest reg %s due to write mode in %s", GetRegName(reg),
+                        GetHostRegName(hreg.value()));
 
-        ClearConstantReg(static_cast<Reg>(reg));
+        ClearConstantReg(reg);
       }
     }
     break;
@@ -383,9 +383,9 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
     case HR_TYPE_LOAD_DELAY_VALUE:
     {
       DebugAssert(!m_load_delay_dirty && (!HasLoadDelay() || !(flags & HR_MODE_WRITE)));
-      Log_DebugPrintf("Allocating load delayed guest register %s in host reg %s in %s mode",
-                      GetRegName(static_cast<Reg>(reg)), GetHostRegName(hreg.value()), GetReadWriteModeString(flags));
-      m_load_delay_register = static_cast<Reg>(reg);
+      Log_DebugPrintf("Allocating load delayed guest register %s in host reg %s in %s mode", GetRegName(reg),
+                      GetHostRegName(hreg.value()), GetReadWriteModeString(flags));
+      m_load_delay_register = reg;
       m_load_delay_value_register = hreg.value();
       if (flags & HR_MODE_READ)
         LoadHostRegFromCPUPointer(hreg.value(), &g_state.load_delay_value);
@@ -394,9 +394,9 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
 
     case HR_TYPE_NEXT_LOAD_DELAY_VALUE:
     {
-      Log_DebugPrintf("Allocating next load delayed guest register %s in host reg %s in %s mode",
-                      GetRegName(static_cast<Reg>(reg)), GetHostRegName(hreg.value()), GetReadWriteModeString(flags));
-      m_next_load_delay_register = static_cast<Reg>(reg);
+      Log_DebugPrintf("Allocating next load delayed guest register %s in host reg %s in %s mode", GetRegName(reg),
+                      GetHostRegName(hreg.value()), GetReadWriteModeString(flags));
+      m_next_load_delay_register = reg;
       m_next_load_delay_value_register = hreg.value();
       if (flags & HR_MODE_READ)
         LoadHostRegFromCPUPointer(hreg.value(), &g_state.next_load_delay_value);
@@ -419,7 +419,7 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
 }
 
 std::optional<u32> CPU::NewRec::Compiler::CheckHostReg(u32 flags, HostRegAllocType type /* = HR_TYPE_TEMP */,
-                                                       s8 reg /* = -1 */)
+                                                       Reg reg /* = Reg::count */)
 {
   for (u32 i = 0; i < NUM_HOST_REGS; i++)
   {
@@ -433,17 +433,17 @@ std::optional<u32> CPU::NewRec::Compiler::CheckHostReg(u32 flags, HostRegAllocTy
       DebugAssert(type == HR_TYPE_CPU_REG);
       if (!(ra.flags & HR_MODE_WRITE))
       {
-        Log_DebugPrintf("Switch guest reg %s from read to read-write in host reg %s", GetRegName(static_cast<Reg>(reg)),
+        Log_DebugPrintf("Switch guest reg %s from read to read-write in host reg %s", GetRegName(reg),
                         GetHostRegName(i));
       }
 
-      if (HasConstantReg(static_cast<Reg>(reg)))
+      if (HasConstantReg(reg))
       {
-        DebugAssert(reg != static_cast<s8>(Reg::zero));
-        Log_DebugPrintf("Clearing constant register in guest reg %s due to write mode in %s",
-                        GetRegName(static_cast<Reg>(reg)), GetHostRegName(i));
+        DebugAssert(reg != Reg::zero);
+        Log_DebugPrintf("Clearing constant register in guest reg %s due to write mode in %s", GetRegName(reg),
+                        GetHostRegName(i));
 
-        ClearConstantReg(static_cast<Reg>(reg));
+        ClearConstantReg(reg);
       }
     }
 
@@ -480,18 +480,17 @@ void CPU::NewRec::Compiler::FlushHostReg(u32 reg)
     {
       case HR_TYPE_CPU_REG:
       {
-        DebugAssert(ra.reg > 0 && ra.reg < static_cast<s8>(Reg::count));
-        Log_DebugPrintf("Flushing register %s in host register %s to state", GetRegName(static_cast<Reg>(ra.reg)),
-                        GetHostRegName(reg));
-        StoreHostRegToCPUPointer(reg, &g_state.regs.r[ra.reg]);
+        DebugAssert(ra.reg > Reg::zero && ra.reg < Reg::count);
+        Log_DebugPrintf("Flushing register %s in host register %s to state", GetRegName(ra.reg), GetHostRegName(reg));
+        StoreHostRegToCPUPointer(reg, &g_state.regs.r[static_cast<u8>(ra.reg)]);
       }
       break;
 
       case HR_TYPE_LOAD_DELAY_VALUE:
       {
         DebugAssert(m_load_delay_value_register == reg);
-        Log_DebugPrintf("Flushing load delayed register %s in host register %s to state",
-                        GetRegName(static_cast<Reg>(ra.reg)), GetHostRegName(reg));
+        Log_DebugPrintf("Flushing load delayed register %s in host register %s to state", GetRegName(ra.reg),
+                        GetHostRegName(reg));
 
         StoreHostRegToCPUPointer(reg, &g_state.load_delay_value);
         m_load_delay_value_register = NUM_HOST_REGS;
@@ -501,8 +500,8 @@ void CPU::NewRec::Compiler::FlushHostReg(u32 reg)
       case HR_TYPE_NEXT_LOAD_DELAY_VALUE:
       {
         DebugAssert(m_next_load_delay_value_register == reg);
-        Log_WarningPrintf("Flushing NEXT load delayed register %s in host register %s to state",
-                          GetRegName(static_cast<Reg>(ra.reg)), GetHostRegName(reg));
+        Log_WarningPrintf("Flushing NEXT load delayed register %s in host register %s to state", GetRegName(ra.reg),
+                          GetHostRegName(reg));
 
         StoreHostRegToCPUPointer(reg, &g_state.next_load_delay_value);
         m_next_load_delay_value_register = NUM_HOST_REGS;
@@ -527,10 +526,10 @@ void CPU::NewRec::Compiler::ClearHostReg(u32 reg)
   ra.flags &= IMMUTABLE_HR_FLAGS;
   ra.type = HR_TYPE_TEMP;
   ra.counter = 0;
-  ra.reg = -1;
+  ra.reg = Reg::count;
 }
 
-void CPU::NewRec::Compiler::MarkRegsNeeded(HostRegAllocType type, s8 reg)
+void CPU::NewRec::Compiler::MarkRegsNeeded(HostRegAllocType type, Reg reg)
 {
   for (u32 i = 0; i < NUM_HOST_REGS; i++)
   {
@@ -540,7 +539,7 @@ void CPU::NewRec::Compiler::MarkRegsNeeded(HostRegAllocType type, s8 reg)
   }
 }
 
-void CPU::NewRec::Compiler::RenameHostReg(u32 reg, u32 new_flags, HostRegAllocType new_type, s8 new_reg)
+void CPU::NewRec::Compiler::RenameHostReg(u32 reg, u32 new_flags, HostRegAllocType new_type, Reg new_reg)
 {
   // only supported for cpu regs for now
   DebugAssert(new_type == HR_TYPE_TEMP || new_type == HR_TYPE_CPU_REG);
@@ -554,10 +553,10 @@ void CPU::NewRec::Compiler::RenameHostReg(u32 reg, u32 new_flags, HostRegAllocTy
 
   // kill any load delay to this reg
   if (new_type == HR_TYPE_CPU_REG)
-    CancelLoadDelaysToReg(static_cast<Reg>(new_reg));
+    CancelLoadDelaysToReg(new_reg);
 
   if (new_type == HR_TYPE_CPU_REG)
-    Log_DebugPrintf("Renaming host reg %s to guest reg %s", GetHostRegName(reg), GetRegName(static_cast<Reg>(new_reg)));
+    Log_DebugPrintf("Renaming host reg %s to guest reg %s", GetHostRegName(reg), GetRegName(new_reg));
   else
     Log_DebugPrintf("Renaming host reg %s");
 
@@ -598,7 +597,7 @@ void CPU::NewRec::Compiler::DeleteMIPSReg(Reg reg, bool flush)
   for (u32 i = 0; i < NUM_HOST_REGS; i++)
   {
     HostRegAlloc& ra = m_host_regs[i];
-    if (ra.flags & HR_ALLOCATED && ra.type == HR_TYPE_CPU_REG && ra.reg == static_cast<s8>(reg))
+    if (ra.flags & HR_ALLOCATED && ra.type == HR_TYPE_CPU_REG && ra.reg == reg)
     {
       if (flush)
         FlushHostReg(i);
@@ -664,8 +663,7 @@ void CPU::NewRec::Compiler::Flush(u32 flags)
         if (ra.type != HR_TYPE_CPU_REG || ((ra.flags & req_flags) != req_flags))
           continue;
 
-        Log_DebugPrintf("Freeing non-dirty cached register %s in %s", GetRegName(static_cast<Reg>(ra.reg)),
-                        GetHostRegName(i));
+        Log_DebugPrintf("Freeing non-dirty cached register %s in %s", GetRegName(ra.reg), GetHostRegName(i));
         FreeHostReg(i);
       }
 
@@ -908,7 +906,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
 
   if (tflags & TF_READS_S)
   {
-    MarkRegsNeeded(HR_TYPE_CPU_REG, static_cast<s8>(rs));
+    MarkRegsNeeded(HR_TYPE_CPU_REG, rs);
     if (HasConstantReg(rs))
       cf.const_s = true;
     else
@@ -916,7 +914,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   }
   if (tflags & TF_READS_T)
   {
-    MarkRegsNeeded(HR_TYPE_CPU_REG, static_cast<s8>(rt));
+    MarkRegsNeeded(HR_TYPE_CPU_REG, rt);
     if (HasConstantReg(rt))
       cf.const_t = true;
     else
@@ -924,7 +922,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   }
   if (tflags & TF_READS_LO)
   {
-    MarkRegsNeeded(HR_TYPE_CPU_REG, static_cast<s8>(Reg::lo));
+    MarkRegsNeeded(HR_TYPE_CPU_REG, Reg::lo);
     if (HasConstantReg(Reg::lo))
       cf.const_lo = true;
     else
@@ -932,7 +930,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   }
   if (tflags & TF_READS_HI)
   {
-    MarkRegsNeeded(HR_TYPE_CPU_REG, static_cast<s8>(Reg::hi));
+    MarkRegsNeeded(HR_TYPE_CPU_REG, Reg::hi);
     if (HasConstantReg(Reg::hi))
       cf.const_hi = true;
     else
@@ -955,7 +953,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   if (tflags & TF_READS_S &&
       (tflags & TF_NEEDS_REG_S || !cf.const_s || (tflags & TF_WRITES_D && rd != Reg::zero && rd == rs)))
   {
-    cf.host_s = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, static_cast<s8>(rs));
+    cf.host_s = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rs);
     cf.const_s = false;
     cf.valid_host_s = true;
   }
@@ -963,7 +961,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   if (tflags & TF_READS_T &&
       (tflags & (TF_NEEDS_REG_T | TF_WRITES_T) || !cf.const_t || (tflags & TF_WRITES_D && rd != Reg::zero && rd == rt)))
   {
-    cf.host_t = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, static_cast<s8>(rt));
+    cf.host_t = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rt);
     cf.const_t = false;
     cf.valid_host_t = true;
   }
@@ -972,7 +970,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   {
     cf.host_lo =
       AllocateHostReg(((tflags & TF_READS_LO) ? HR_MODE_READ : 0u) | ((tflags & TF_WRITES_LO) ? HR_MODE_WRITE : 0u),
-                      HR_TYPE_CPU_REG, static_cast<s8>(Reg::lo));
+                      HR_TYPE_CPU_REG, Reg::lo);
     cf.const_lo = false;
     cf.valid_host_lo = true;
   }
@@ -981,7 +979,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   {
     cf.host_hi =
       AllocateHostReg(((tflags & TF_READS_HI) ? HR_MODE_READ : 0u) | ((tflags & TF_WRITES_HI) ? HR_MODE_WRITE : 0u),
-                      HR_TYPE_CPU_REG, static_cast<s8>(Reg::hi));
+                      HR_TYPE_CPU_REG, Reg::hi);
     cf.const_hi = false;
     cf.valid_host_hi = true;
   }
@@ -1007,12 +1005,12 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
     if (tflags & TF_WRITES_D && rd != Reg::zero)
     {
       DeleteMIPSReg(rd, false);
-      RenameHostReg(tempreg, HR_MODE_WRITE, HR_TYPE_CPU_REG, static_cast<s8>(rd));
+      RenameHostReg(tempreg, HR_MODE_WRITE, HR_TYPE_CPU_REG, rd);
     }
     else if (tflags & TF_WRITES_T && rt != Reg::zero)
     {
       DeleteMIPSReg(rt, false);
-      RenameHostReg(tempreg, HR_MODE_WRITE, HR_TYPE_CPU_REG, static_cast<s8>(rt));
+      RenameHostReg(tempreg, HR_MODE_WRITE, HR_TYPE_CPU_REG, rt);
     }
     else
     {
@@ -1024,14 +1022,14 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
     if (tflags & TF_WRITES_D && rd != Reg::zero)
     {
       DebugAssert(!(tflags & TF_LOAD_DELAY));
-      cf.host_d = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, static_cast<s8>(rd));
+      cf.host_d = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, rd);
       cf.valid_host_d = true;
     }
 
     if (tflags & TF_WRITES_T && rt != Reg::zero)
     {
       DebugAssert(!(tflags & TF_LOAD_DELAY));
-      cf.host_t = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, static_cast<s8>(rt));
+      cf.host_t = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, rt);
       cf.valid_host_t = true;
     }
 
@@ -1063,7 +1061,7 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool
     if constexpr (HAS_MEMORY_OPERANDS)
     {
       // don't bother caching it since we're going to flush anyway
-      const std::optional<u32> hreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, static_cast<s8>(rs));
+      const std::optional<u32> hreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rs);
       if (hreg.has_value())
       {
         cf.valid_host_s = true;
@@ -1073,7 +1071,7 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool
     else
     {
       // need rs in a register
-      cf.host_s = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, static_cast<s8>(rs));
+      cf.host_s = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rs);
       cf.valid_host_s = true;
     }
   }
@@ -1090,7 +1088,7 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool
     {
       if constexpr (HAS_MEMORY_OPERANDS)
       {
-        const std::optional<u32> hreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, static_cast<s8>(rt));
+        const std::optional<u32> hreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rt);
         if (hreg.has_value())
         {
           cf.valid_host_t = true;
@@ -1099,7 +1097,7 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool
       }
       else
       {
-        cf.host_t = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, static_cast<s8>(rt));
+        cf.host_t = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rt);
         cf.valid_host_t = true;
       }
     }
@@ -1132,8 +1130,8 @@ void CPU::NewRec::Compiler::CompileMoveRegTemplate(Reg dst, Reg src)
   }
 
   // TODO: rename if src is no longer used
-  const u32 srcreg = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, static_cast<s8>(src));
-  const u32 dstreg = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, static_cast<s8>(dst));
+  const u32 srcreg = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, src);
+  const u32 dstreg = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, dst);
   CopyHostReg(dstreg, srcreg);
 }
 

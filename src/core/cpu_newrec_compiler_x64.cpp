@@ -1058,9 +1058,9 @@ void CPU::NewRec::X64Compiler::Compile_Load(CompileFlags cf, MemoryAccessSize si
   // TODO: option to turn off load delay?
   Reg32 rt;
   if constexpr (true)
-    rt = Reg32(AllocateHostReg(HR_MODE_WRITE, Compiler::HR_TYPE_NEXT_LOAD_DELAY_VALUE, cf.mips_t));
+    rt = Reg32(AllocateHostReg(HR_MODE_WRITE, Compiler::HR_TYPE_NEXT_LOAD_DELAY_VALUE, cf.MipsT()));
   else
-    rt = Reg32(AllocateHostReg(HR_MODE_WRITE, Compiler::HR_TYPE_CPU_REG, cf.mips_t));
+    rt = Reg32(AllocateHostReg(HR_MODE_WRITE, Compiler::HR_TYPE_CPU_REG, cf.MipsT()));
 
   switch (size)
   {
