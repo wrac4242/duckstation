@@ -22,9 +22,9 @@
 
 extern "C" {
 
-#define VULKAN_MODULE_ENTRY_POINT(name, required) PFN_##name ds_##name;
-#define VULKAN_INSTANCE_ENTRY_POINT(name, required) PFN_##name ds_##name;
-#define VULKAN_DEVICE_ENTRY_POINT(name, required) PFN_##name ds_##name;
+#define VULKAN_MODULE_ENTRY_POINT(name, required) PFN_##name name;
+#define VULKAN_INSTANCE_ENTRY_POINT(name, required) PFN_##name name;
+#define VULKAN_DEVICE_ENTRY_POINT(name, required) PFN_##name name;
 #include "entry_points.inl"
 #undef VULKAN_DEVICE_ENTRY_POINT
 #undef VULKAN_INSTANCE_ENTRY_POINT
@@ -34,9 +34,9 @@ extern "C" {
 namespace Vulkan {
 void ResetVulkanLibraryFunctionPointers()
 {
-#define VULKAN_MODULE_ENTRY_POINT(name, required) ds_##name = nullptr;
-#define VULKAN_INSTANCE_ENTRY_POINT(name, required) ds_##name = nullptr;
-#define VULKAN_DEVICE_ENTRY_POINT(name, required) ds_##name = nullptr;
+#define VULKAN_MODULE_ENTRY_POINT(name, required) name = nullptr;
+#define VULKAN_INSTANCE_ENTRY_POINT(name, required) name = nullptr;
+#define VULKAN_DEVICE_ENTRY_POINT(name, required) name = nullptr;
 #include "entry_points.inl"
 #undef VULKAN_DEVICE_ENTRY_POINT
 #undef VULKAN_INSTANCE_ENTRY_POINT
