@@ -92,7 +92,7 @@ const void* CPU::NewRec::Compiler::CompileBlock(Block* block)
   DisassembleAndLog(code, size);
   Log_DebugPrintf(" --- %u bytes", size);
 #else
-  Log_DebugPrintf("Whole block for %08X took %u bytes", block->pc, size);
+  Log_ProfilePrintf("Whole block for %08X took %u bytes for %u instructions", block->pc, size, block->size);
 #endif
 
   g_code_buffer.CommitCode(size);
@@ -821,16 +821,16 @@ void CPU::NewRec::Compiler::CompileInstruction()
     case InstructionOp::xori: CompileTemplate(&Compiler::Compile_xori_const, &Compiler::Compile_xori, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE); break;
     case InstructionOp::lui: Compile_lui(); break;
 
-    case InstructionOp::lb: CompileLoadStoreTemplate(MemoryAccessSize::Byte, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
-    case InstructionOp::lbu: CompileLoadStoreTemplate(MemoryAccessSize::Byte, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
-    case InstructionOp::lh: CompileLoadStoreTemplate(MemoryAccessSize::HalfWord, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
-    case InstructionOp::lhu: CompileLoadStoreTemplate(MemoryAccessSize::HalfWord, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
-    case InstructionOp::lw: CompileLoadStoreTemplate(MemoryAccessSize::Word, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
+    case InstructionOp::lb: CompileLoadStoreTemplate(MemoryAccessSize::Byte, false, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
+    case InstructionOp::lbu: CompileLoadStoreTemplate(MemoryAccessSize::Byte, false, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
+    case InstructionOp::lh: CompileLoadStoreTemplate(MemoryAccessSize::HalfWord, false, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
+    case InstructionOp::lhu: CompileLoadStoreTemplate(MemoryAccessSize::HalfWord, false, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
+    case InstructionOp::lw: CompileLoadStoreTemplate(MemoryAccessSize::Word, false, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
     case InstructionOp::lwl: Compile_Fallback(); break;
     case InstructionOp::lwr: Compile_Fallback(); break;
-    case InstructionOp::sb: CompileLoadStoreTemplate(MemoryAccessSize::Byte, false, TF_READS_S | TF_READS_T); break;
-    case InstructionOp::sh: CompileLoadStoreTemplate(MemoryAccessSize::HalfWord, false, TF_READS_S | TF_READS_T); break;
-    case InstructionOp::sw: CompileLoadStoreTemplate(MemoryAccessSize::Word, false, TF_READS_S | TF_READS_T); break;
+    case InstructionOp::sb: CompileLoadStoreTemplate(MemoryAccessSize::Byte, true, false, TF_READS_S | TF_READS_T); break;
+    case InstructionOp::sh: CompileLoadStoreTemplate(MemoryAccessSize::HalfWord, true, false, TF_READS_S | TF_READS_T); break;
+    case InstructionOp::sw: CompileLoadStoreTemplate(MemoryAccessSize::Word, true, false, TF_READS_S | TF_READS_T); break;
     case InstructionOp::swl: Compile_Fallback(); break;
     case InstructionOp::swr: Compile_Fallback(); break;
 
@@ -841,7 +841,7 @@ void CPU::NewRec::Compiler::CompileInstruction()
           switch (inst->cop.CommonOp())
           {
             case CopCommonInstruction::mfcn: CompileTemplate(nullptr, &Compiler::Compile_mfc0, TF_WRITES_T | TF_LOAD_DELAY); break;
-            case CopCommonInstruction::mtcn: CompileTemplate(nullptr, &Compiler::Compile_mtc0, TF_READS_T | TF_LOAD_DELAY); break;
+            case CopCommonInstruction::mtcn: CompileTemplate(nullptr, &Compiler::Compile_mtc0, TF_READS_T); break;
             default: Compile_Fallback(); break;
           }
         }
@@ -855,6 +855,30 @@ void CPU::NewRec::Compiler::CompileInstruction()
         }
       }
       break;
+
+    case InstructionOp::cop2:
+      {
+        if (inst->cop.IsCommonInstruction())
+        {
+          switch (inst->cop.CommonOp())
+          {
+            case CopCommonInstruction::mfcn: CompileTemplate(nullptr, &Compiler::Compile_mfc2, TF_GTE_STALL); break;
+            case CopCommonInstruction::cfcn: CompileTemplate(nullptr, &Compiler::Compile_mfc2, TF_GTE_STALL); break;
+            case CopCommonInstruction::mtcn: CompileTemplate(nullptr, &Compiler::Compile_mtc2, TF_GTE_STALL | TF_READS_T); break;
+            case CopCommonInstruction::ctcn: CompileTemplate(nullptr, &Compiler::Compile_mtc2, TF_GTE_STALL | TF_READS_T); break;
+            default: Compile_Fallback(); break;
+          }
+        }
+        else
+        {
+          // GTE ops
+          CompileTemplate(nullptr, &Compiler::Compile_cop2, TF_GTE_STALL);
+        }
+      }
+      break;
+
+    case InstructionOp::lwc2: CompileLoadStoreTemplate(MemoryAccessSize::Word, false, false, TF_GTE_STALL | TF_READS_S | TF_LOAD_DELAY); break;
+    case InstructionOp::swc2: CompileLoadStoreTemplate(MemoryAccessSize::Word, true, false, TF_GTE_STALL | TF_READS_S); break;
 
     default: Panic("Fixme"); break;
       // clang-format on
@@ -903,6 +927,9 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   Reg rs = inst->r.rs.GetValue();
   Reg rt = inst->r.rt.GetValue();
   Reg rd = inst->r.rd.GetValue();
+  
+  if (tflags & TF_GTE_STALL)
+    StallUntilGTEComplete();
 
   // throw away instructions writing to $zero
   if (!(tflags & TF_NO_NOP) && (!g_settings.cpu_recompiler_memory_exceptions || !(tflags & TF_CAN_OVERFLOW)) &&
@@ -1057,10 +1084,13 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   }
 }
 
-void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool sign, u32 tflags)
+void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool store, bool sign, u32 tflags)
 {
   const Reg rs = inst->i.rs;
   const Reg rt = inst->i.rt;
+
+  if (tflags & TF_GTE_STALL)
+    StallUntilGTEComplete();
 
   CompileFlags cf = {};
 
@@ -1096,9 +1126,11 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool
     }
   }
 
+
+
   // reads T -> store, writes T -> load
   // for now, we defer the allocation to afterwards, because C call
-  if (tflags & TF_READS_T)
+  if (store)
   {
     if (HasConstantReg(rt))
     {
@@ -1587,4 +1619,107 @@ void CPU::NewRec::Compiler::Compile_mfc0(CompileFlags cf)
 
   DebugAssert(cf.valid_host_t);
   LoadHostRegFromCPUPointer(cf.host_t, ptr);
+}
+
+std::pair<u32*, CPU::NewRec::Compiler::GTERegisterAccessAction>
+CPU::NewRec::Compiler::GetGTERegisterPointer(u32 index, bool writing)
+{
+  if (!writing)
+  {
+    // Most GTE registers can be read directly. Handle the special cases here.
+    if (index == 15) // SXY3
+    {
+      // mirror of SXY2
+      index = 14;
+    }
+
+    switch (index)
+    {
+      case 28: // IRGB
+      case 29: // ORGB
+      {
+        return std::make_pair(&g_state.gte_regs.r32[index], GTERegisterAccessAction::CallHandler);
+      }
+      break;
+
+      default:
+      {
+        return std::make_pair(&g_state.gte_regs.r32[index], GTERegisterAccessAction::Direct);
+      }
+      break;
+    }
+  }
+  else
+  {
+    switch (index)
+    {
+      case 1:  // V0[z]
+      case 3:  // V1[z]
+      case 5:  // V2[z]
+      case 8:  // IR0
+      case 9:  // IR1
+      case 10: // IR2
+      case 11: // IR3
+      case 36: // RT33
+      case 44: // L33
+      case 52: // LR33
+      case 58: // H       - sign-extended on read but zext on use
+      case 59: // DQA
+      case 61: // ZSF3
+      case 62: // ZSF4
+      {
+        // sign-extend z component of vector registers
+        return std::make_pair(&g_state.gte_regs.r32[index], GTERegisterAccessAction::SignExtend16);
+      }
+      break;
+
+      case 7:  // OTZ
+      case 16: // SZ0
+      case 17: // SZ1
+      case 18: // SZ2
+      case 19: // SZ3
+      {
+        // zero-extend unsigned values
+        return std::make_pair(&g_state.gte_regs.r32[index], GTERegisterAccessAction::ZeroExtend16);
+      }
+      break;
+
+      case 15: // SXY3
+      {
+        // writing to SXYP pushes to the FIFO
+        return std::make_pair(&g_state.gte_regs.r32[index], GTERegisterAccessAction::PushFIFO);
+      }
+      break;
+
+      case 28: // IRGB
+      case 30: // LZCS
+      case 63: // FLAG
+      {
+        return std::make_pair(&g_state.gte_regs.r32[index], GTERegisterAccessAction::CallHandler);
+      }
+
+      case 29: // ORGB
+      case 31: // LZCR
+      {
+        // read-only registers
+        return std::make_pair(&g_state.gte_regs.r32[index], GTERegisterAccessAction::Ignore);
+      }
+
+      default:
+      {
+        // written as-is, 2x16 or 1x32 bits
+        return std::make_pair(&g_state.gte_regs.r32[index], GTERegisterAccessAction::Direct);
+      }
+    }
+  }
+}
+
+void CPU::NewRec::Compiler::AddGTETicks(TickCount ticks)
+{
+  //
+}
+
+void CPU::NewRec::Compiler::StallUntilGTEComplete()
+{
+  //
 }

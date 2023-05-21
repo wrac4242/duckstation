@@ -34,6 +34,7 @@ static std::unique_ptr<const void*[]> s_lut_code_pointers;
 static std::unique_ptr<Block*[]> s_lut_block_pointers;
 static PageBlockLookupArray s_page_block_lookup;
 static std::vector<Block*> s_blocks;
+static bool s_lut_initialized = false;
 
 // for compiling
 static std::vector<Instruction> s_block_instructions;
@@ -117,6 +118,7 @@ void CPU::NewRec::AllocateLUTs()
   Assert(!s_lut_code_pointers && !s_lut_block_pointers);
   s_lut_code_pointers = std::make_unique<const void*[]>(num_code_slots);
   s_lut_block_pointers = std::make_unique<Block*[]>(num_block_slots);
+  std::memset(s_lut_block_pointers.get(), 0, sizeof(Block*) * num_block_slots);
 
   CodeLUT code_table_ptr = s_lut_code_pointers.get();
   Block** block_table_ptr = s_lut_block_pointers.get();
@@ -331,7 +333,11 @@ void CPU::NewRec::InvalidCodeFunction()
 
 bool CPU::NewRec::Initialize()
 {
-  AllocateLUTs();
+  if (!s_lut_initialized)
+  {
+    s_lut_initialized = true;
+    AllocateLUTs();
+  }
 
   if (!g_code_buffer.Initialize(s_code_storage, sizeof(s_code_storage), 0, RECOMPILER_GUARD_SIZE))
   {
@@ -344,6 +350,11 @@ bool CPU::NewRec::Initialize()
   ResetLUTs();
 
   return true;
+}
+
+void CPU::NewRec::Shutdown()
+{
+  g_code_buffer.Destroy();
 }
 
 void CPU::NewRec::Execute()
@@ -373,4 +384,23 @@ void CPU::NewRec::InvalidateBlocksWithPageNumber(u32 index)
 
   s_page_block_lookup[index] = {};
   Bus::ClearRAMCodePage(index);
+}
+
+void CPU::NewRec::ClearBlocks()
+{
+  for (u32 i = 0; i < Bus::RAM_8MB_CODE_PAGE_COUNT; i++)
+  {
+    if (!s_page_block_lookup[i].first)
+      continue;
+
+    s_page_block_lookup[i] = {};
+    Bus::ClearRAMCodePage(i);
+  }
+
+  for (Block* block : s_blocks)
+    std::free(block);
+  s_blocks.clear();
+  
+  std::memset(s_lut_block_pointers.get(), 0, sizeof(Block*) * GetLUTSlotCount(false));
+  ResetLUTs();
 }

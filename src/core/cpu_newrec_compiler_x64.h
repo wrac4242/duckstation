@@ -97,6 +97,10 @@ protected:
   void Compile_mtc0(CompileFlags cf) override;
   void Compile_rfe(CompileFlags cf) override;
 
+  void Compile_mfc2(CompileFlags cf) override;
+  void Compile_mtc2(CompileFlags cf) override;
+  void Compile_cop2(CompileFlags cf) override;
+
 private:
   static void CompileThunk(u32 start_pc);
 

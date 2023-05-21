@@ -9,6 +9,7 @@
 #include "cpu_core_private.h"
 #include "cpu_newrec_private.h"
 #include "cpu_recompiler_thunks.h"
+#include "gte.h"
 #include "settings.h"
 #include "timing_event.h"
 Log_SetChannel(CPU::NewRec);
@@ -1129,6 +1130,69 @@ void CPU::NewRec::X64Compiler::Compile_Load(CompileFlags cf, MemoryAccessSize si
       break;
   }
 
+  // TODO: move this out
+  if (inst->op == InstructionOp::lwc2)
+  {
+    const u32 index = static_cast<u32>(inst->r.rt.GetValue());
+    const auto [ptr, action] = GetGTERegisterPointer(index, true);
+    switch (action)
+    {
+      case GTERegisterAccessAction::Ignore:
+      {
+        return;
+      }
+
+      case GTERegisterAccessAction::Direct:
+      {
+        cg->mov(cg->dword[PTR(ptr)], RWRET);
+        return;
+      }
+
+      case GTERegisterAccessAction::SignExtend16:
+      {
+        cg->movsx(RWRET, RWRET.cvt16());
+        cg->mov(cg->dword[PTR(ptr)], RWRET);
+        return;
+      }
+
+      case GTERegisterAccessAction::ZeroExtend16:
+      {
+        cg->movzx(RWRET, RWRET.cvt16());
+        cg->mov(cg->dword[PTR(ptr)], RWRET);
+        return;
+      }
+
+      case GTERegisterAccessAction::CallHandler:
+      {
+        Flush(FLUSH_FOR_C_CALL);
+        cg->mov(RWARG2, RWRET);
+        cg->mov(RWARG1, index);
+        cg->call(&GTE::WriteRegister);
+        return;
+      }
+
+      case GTERegisterAccessAction::PushFIFO:
+      {
+        // SXY0 <- SXY1
+        // SXY1 <- SXY2
+        // SXY2 <- SXYP
+        DebugAssert(RWRET != RWARG1 && RWRET != RWARG2);
+        cg->mov(RWARG1, cg->dword[PTR(&g_state.gte_regs.SXY1[0])]);
+        cg->mov(RWARG2, cg->dword[PTR(&g_state.gte_regs.SXY2[0])]);
+        cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY0[0])], RWARG1);
+        cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY1[0])], RWARG2);
+        cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY2[0])], RWRET);
+        return;
+      }
+
+      default:
+      {
+        Panic("Unknown action");
+        return;
+      }
+    }
+  }
+
   if (cf.MipsT() == Reg::zero)
     return;
 
@@ -1157,7 +1221,40 @@ void CPU::NewRec::X64Compiler::Compile_Store(CompileFlags cf, MemoryAccessSize s
                                              const std::optional<VirtualMemoryAddress>& address)
 {
   ComputeLoadStoreAddressArg(cf, address);
-  MoveTToReg(RWARG2, cf);
+
+  // TODO: move this out
+  if (inst->op == InstructionOp::swc2)
+  {
+    const u32 index = static_cast<u32>(inst->r.rt.GetValue());
+    const auto [ptr, action] = GetGTERegisterPointer(index, false);
+    switch (action)
+    {
+      case GTERegisterAccessAction::Direct:
+      {
+        cg->mov(RWARG2, cg->dword[PTR(ptr)]);
+      }
+      break;
+
+      case GTERegisterAccessAction::CallHandler:
+      {
+        Flush(FLUSH_FOR_C_CALL);
+        cg->mov(RWARG1, index);
+        cg->call(&GTE::ReadRegister);
+        cg->mov(RWRET, RWARG2);
+      }
+      break;
+
+      default:
+      {
+        Panic("Unknown action");
+      }
+      break;
+    }
+  }
+  else
+  {
+    MoveTToReg(RWARG2, cf);
+  }
   Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
 
   switch (size)
@@ -1287,6 +1384,121 @@ void CPU::NewRec::X64Compiler::TestInterrupts(const Xbyak::Reg32& sr)
   RestoreHostState();
 
   cg->L(no_interrupt);
+}
+
+void CPU::NewRec::X64Compiler::Compile_mfc2(CompileFlags cf)
+{
+  const u32 index = inst->cop.Cop2Index();
+  const Reg rt = inst->r.rt;
+
+  const auto [ptr, action] = GetGTERegisterPointer(index, false);
+  if (action == GTERegisterAccessAction::Ignore)
+    return;
+
+  if (action == GTERegisterAccessAction::Direct)
+  {
+    const u32 hreg = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_NEXT_LOAD_DELAY_VALUE, rt);
+    cg->mov(Reg32(hreg), cg->dword[PTR(ptr)]);
+  }
+  else if (action == GTERegisterAccessAction::CallHandler)
+  {
+    Flush(FLUSH_FOR_C_CALL);
+    cg->mov(RWARG1, index);
+    cg->call(&GTE::ReadRegister);
+
+    const u32 hreg = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_NEXT_LOAD_DELAY_VALUE, rt);
+    cg->mov(Reg32(hreg), RWRET);
+  }
+  else
+  {
+    Panic("Unknown action");
+  }
+}
+
+void CPU::NewRec::X64Compiler::Compile_mtc2(CompileFlags cf)
+{
+  const u32 index = inst->cop.Cop2Index();
+  const auto [ptr, action] = GetGTERegisterPointer(index, true);
+  if (action == GTERegisterAccessAction::Ignore)
+    return;
+
+  if (action == GTERegisterAccessAction::Direct)
+  {
+    if (cf.const_t)
+    {
+      cg->mov(cg->dword[PTR(ptr)], GetConstantRegU32(cf.MipsT()));
+    }
+    else if (cf.valid_host_t)
+    {
+      cg->mov(cg->dword[PTR(ptr)], CFGetRegT(cf));
+    }
+    else
+    {
+      cg->mov(RWARG1, MipsPtr(cf.MipsT()));
+      cg->mov(cg->dword[PTR(ptr)], RWARG1);
+    }
+  }
+  else if (action == GTERegisterAccessAction::SignExtend16 || action == GTERegisterAccessAction::ZeroExtend16)
+  {
+    const bool sign = (action == GTERegisterAccessAction::SignExtend16);
+    if (cf.const_t)
+    {
+      const u16 cv = Truncate16(GetConstantRegU32(cf.MipsT()));
+      cg->mov(cg->dword[PTR(ptr)], sign ? ::SignExtend16(cv) : ::ZeroExtend16(cv));
+    }
+    else if (cf.valid_host_t)
+    {
+      sign ? cg->movsx(RWARG1, Reg16(cf.host_t)) : cg->movzx(RWARG1, Reg16(cf.host_t));
+      cg->mov(cg->dword[PTR(ptr)], RWARG1);
+    }
+    else
+    {
+      sign ? cg->movsx(RWARG1, cg->word[PTR(&g_state.regs.r[cf.mips_t])]) :
+             cg->movzx(RWARG1, cg->word[PTR(&g_state.regs.r[cf.mips_t])]);
+      cg->mov(cg->dword[PTR(ptr)], RWARG1);
+    }
+  }
+  else if (action == GTERegisterAccessAction::CallHandler)
+  {
+    Flush(FLUSH_FOR_C_CALL);
+    cg->mov(RWARG1, index);
+    MoveTToReg(RWARG2, cf);
+    cg->call(&GTE::WriteRegister);
+  }
+  else if (action == GTERegisterAccessAction::PushFIFO)
+  {
+    // SXY0 <- SXY1
+    // SXY1 <- SXY2
+    // SXY2 <- SXYP
+    cg->mov(RWARG1, cg->dword[PTR(&g_state.gte_regs.SXY1[0])]);
+    cg->mov(RWARG2, cg->dword[PTR(&g_state.gte_regs.SXY2[0])]);
+    if (!cf.const_t && !cf.valid_host_t)
+      cg->mov(RWARG3, MipsPtr(cf.MipsT()));
+    cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY0[0])], RWARG1);
+    cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY1[0])], RWARG2);
+    if (cf.const_t)
+      cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY2[0])], GetConstantRegU32(cf.MipsT()));
+    else if (cf.valid_host_t)
+      cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY2[0])], CFGetRegT(cf));
+    else
+      cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY2[0])], RWARG3);
+  }
+  else
+  {
+    Panic("Unknown action");
+  }
+}
+
+void CPU::NewRec::X64Compiler::Compile_cop2(CompileFlags cf)
+{
+  TickCount func_ticks;
+  GTE::InstructionImpl func = GTE::GetInstructionImpl(inst->bits, &func_ticks);
+
+  Flush(FLUSH_FOR_C_CALL);
+  cg->mov(RWARG1, inst->bits & GTE::Instruction::REQUIRED_BITS_MASK);
+  cg->call(reinterpret_cast<const void*>(func));
+
+  AddGTETicks(func_ticks);
 }
 
 void CPU::NewRec::X64Compiler::CompileThunk(u32 start_pc)

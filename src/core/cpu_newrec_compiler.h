@@ -105,10 +105,11 @@ protected:
     // TF_FORCEREGS
     // TF_FORCEREGT
     TF_LOAD_DELAY = (1 << 11),
+    TF_GTE_STALL = (1 << 12),
 
-    TF_NO_NOP = (1 << 12),
-    TF_NEEDS_REG_S = (1 << 13),
-    TF_NEEDS_REG_T = (1 << 14),
+    TF_NO_NOP = (1 << 13),
+    TF_NEEDS_REG_S = (1 << 14),
+    TF_NEEDS_REG_T = (1 << 15),
   };
 
   enum HostRegFlags : u8
@@ -225,7 +226,7 @@ protected:
 
   void CompileTemplate(void (Compiler::*const_func)(CompileFlags cf), void (Compiler::*func)(CompileFlags cf),
                        u32 tflags);
-  void CompileLoadStoreTemplate(MemoryAccessSize size, bool sign, u32 tflags);
+  void CompileLoadStoreTemplate(MemoryAccessSize size, bool store, bool sign, u32 tflags);
   void CompileMoveRegTemplate(Reg dst, Reg src);
 
   virtual void Compile_Fallback() = 0;
@@ -320,6 +321,24 @@ protected:
   void Compile_mfc0(CompileFlags cf);
   virtual void Compile_mtc0(CompileFlags cf) = 0;
   virtual void Compile_rfe(CompileFlags cf) = 0;
+
+  void AddGTETicks(TickCount ticks);
+  void StallUntilGTEComplete();
+  virtual void Compile_mfc2(CompileFlags cf) = 0;
+  virtual void Compile_mtc2(CompileFlags cf) = 0;
+  virtual void Compile_cop2(CompileFlags cf) = 0;
+
+  enum GTERegisterAccessAction : u8
+  {
+    Ignore,
+    Direct,
+    ZeroExtend16,
+    SignExtend16,
+    CallHandler,
+    PushFIFO,
+  };
+
+  static std::pair<u32*, GTERegisterAccessAction> GetGTERegisterPointer(u32 index, bool writing);
 
   Block* m_block = nullptr;
   u32 m_compiler_pc = 0;

@@ -283,6 +283,8 @@ void ClearState()
   s_code_buffer.Reset();
   ResetFastMap();
 #endif
+
+  CPU::NewRec::ClearBlocks();
 }
 
 void Shutdown()
@@ -293,6 +295,8 @@ void Shutdown()
   FreeFastMap();
   s_code_buffer.Destroy();
 #endif
+
+  CPU::NewRec::Shutdown();
 }
 
 template<PGXPMode pgxp_mode>
