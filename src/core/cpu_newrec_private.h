@@ -7,6 +7,7 @@
 #include "cpu_types.h"
 #include "types.h"
 #include "util/jit_code_buffer.h"
+#include <unordered_map>
 
 namespace CPU::NewRec {
 enum : u32
@@ -14,7 +15,13 @@ enum : u32
   LUT_TABLE_COUNT = 0x10000,
   LUT_TABLE_SIZE = 0x10000 / sizeof(u32), // 16384, one for each PC
   LUT_TABLE_SHIFT = 16,
+
+  MAX_BLOCK_EXIT_LINKS = 2,
 };
+
+using CodeLUT = const void**;
+using CodeLUTArray = std::array<CodeLUT, LUT_TABLE_COUNT>;
+using BlockLinkMap = std::unordered_multimap<u32, void*>; // TODO: try ordered?
 
 struct Block
 {
@@ -25,6 +32,9 @@ struct Block
   // links to previous/next block within page
   Block* next_block_in_page;
 
+  BlockLinkMap::iterator exit_links[MAX_BLOCK_EXIT_LINKS];
+  u32 num_exit_links;
+
   bool invalidated;
 
   // followed by Instruction * size
@@ -32,8 +42,6 @@ struct Block
   Instruction* Instructions() { return reinterpret_cast<Instruction*>(this + 1); }
 };
 
-using CodeLUT = const void**;
-using CodeLUTArray = std::array<CodeLUT, LUT_TABLE_COUNT>;
 using BlockLUTArray = std::array<Block**, LUT_TABLE_COUNT>;
 
 static constexpr bool BlockInRAM(VirtualMemoryAddress pc)
@@ -45,8 +53,10 @@ Block* LookupBlock(u32 pc);
 Block* CreateBlock(u32 pc);
 bool RevalidateBlock(Block* block);
 void CompileOrRevalidateBlock(u32 start_pc);
+u32 CreateBlockLink(Block* from_block, void* code, u32 newpc);
 
 void CompileASMFunctions();
+u32 EmitJump(void* code, const void* dst);
 
 void SetFastMap(u32 pc, const void* function);
 
@@ -57,7 +67,7 @@ extern CodeLUTArray g_fast_map;
 extern const void* g_enter_recompiler;
 extern const void* g_exit_recompiler;
 extern const void* g_compile_block;
-extern const void* g_event_test_and_dispatch;
+extern const void* g_check_events_and_dispatch;
 extern const void* g_dispatcher;
 extern const void* g_interpret_block;
 

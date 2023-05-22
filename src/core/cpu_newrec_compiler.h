@@ -185,7 +185,7 @@ protected:
 
   virtual void Reset(Block* block);
   virtual void BeginBlock();
-  virtual void EndBlock(std::optional<u32> newpc) = 0;
+  virtual void EndBlock(const std::optional<u32>& newpc) = 0;
   virtual void EndBlockWithException(Exception excode) = 0;
   virtual std::pair<const void*, u32> EndCompile() = 0;
 

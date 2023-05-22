@@ -12,6 +12,7 @@
 #include "gte.h"
 #include "settings.h"
 #include "timing_event.h"
+#include <limits>
 Log_SetChannel(CPU::NewRec);
 
 #define DUMP_BLOCKS
@@ -42,6 +43,7 @@ using namespace Xbyak;
 
 // TODO: register renaming, obviously
 // TODO: try using a pointer to state instead of rip-relative.. it might end up faster due to smaller code
+// TODO: why does enabling block linking break the GTE timing test??
 
 namespace CPU::CodeCache {
 void LogCurrentState();
@@ -99,18 +101,22 @@ void CPU::NewRec::X64Compiler::BeginBlock()
 #endif
 
 #if 0
-  if (m_block->pc == 0x000029C4)
+  if (m_block->pc == 0x80047728)
   {
     //__debugbreak();
     cg->db(0xcc);
   }
 #endif
+
+#if 0
+  cg->nop();
+  cg->mov(RWARG1, m_block->pc);
+  cg->nop();
+#endif
 }
 
-void CPU::NewRec::X64Compiler::EndBlock(std::optional<u32> newpc)
+void CPU::NewRec::X64Compiler::EndBlock(const std::optional<u32>& newpc)
 {
-  const bool link_block = false || !newpc.has_value();
-
   if (newpc.has_value())
   {
     if (m_dirty_pc || m_compiler_pc != newpc)
@@ -118,34 +124,16 @@ void CPU::NewRec::X64Compiler::EndBlock(std::optional<u32> newpc)
   }
   m_dirty_pc = false;
 
-  // save cycles for event test
-  const TickCount cycles = std::exchange(m_cycles, 0);
-
   // flush regs
   Flush(FLUSH_END_BLOCK);
-
-  // event test
-  // pending_ticks += cycles
-  // if (pending_ticks >= downcount) { dispatch_event(); }
-  cg->mov(RWARG1, cg->dword[PTR(&g_state.pending_ticks)]);
-  if (cycles > 0)
-    cg->add(RWARG1, cycles);
-  cg->cmp(RWARG1, cg->dword[PTR(&g_state.downcount)]);
-  if (cycles > 0)
-    cg->mov(cg->dword[PTR(&g_state.pending_ticks)], RWARG1);
-  cg->jge(g_event_test_and_dispatch);
-
-  // jump to dispatcher
-  // TODO: link here
-  cg->jmp(g_dispatcher);
-
-  m_block_ended = true;
+  EndAndLinkBlock(newpc);
 }
 
 void CPU::NewRec::X64Compiler::EndBlockWithException(Exception excode)
 {
   // flush regs, but not pc, it's going to get overwritten
-  Flush(FLUSH_END_BLOCK);
+  // flush cycles because of the GTE instruction stuff...
+  Flush(FLUSH_END_BLOCK | FLUSH_CYCLES);
 
   // TODO: flush load delay
   // TODO: break for pcdrv
@@ -154,7 +142,52 @@ void CPU::NewRec::X64Compiler::EndBlockWithException(Exception excode)
                                                               inst->cop.cop_n));
   cg->mov(RWARG2, m_current_instruction_pc);
   cg->call(static_cast<void (*)(u32, u32)>(&CPU::RaiseException));
-  cg->jmp(g_event_test_and_dispatch);
+  m_dirty_pc = false;
+
+  EndAndLinkBlock(std::nullopt);
+}
+
+void CPU::NewRec::X64Compiler::EndAndLinkBlock(const std::optional<u32>& newpc)
+{
+  // event test
+  // pc should've been flushed
+  DebugAssert(!m_dirty_pc);
+
+  // TODO: try extracting this to a function
+
+  // save cycles for event test
+  const TickCount cycles = std::exchange(m_cycles, 0);
+
+  // pending_ticks += cycles
+  // if (pending_ticks >= downcount) { dispatch_event(); }
+  cg->mov(RWARG1, cg->dword[PTR(&g_state.pending_ticks)]);
+  if (cycles > 0)
+    cg->add(RWARG1, m_cycles);
+  cg->cmp(RWARG1, cg->dword[PTR(&g_state.downcount)]);
+  if (cycles > 0)
+    cg->mov(cg->dword[PTR(&g_state.pending_ticks)], RWARG1);
+  cg->jge(g_check_events_and_dispatch);
+
+  // jump to dispatcher or next block
+  if (!newpc.has_value())
+  {
+    cg->jmp(g_dispatcher);
+  }
+  else
+  {
+    if (newpc.value() == m_block->pc)
+    {
+      // Special case: ourselves! No need to backlink then.
+      Log_DebugPrintf("Linking block at %08X to self", m_block->pc);
+      cg->jmp(cg->getCode());
+    }
+    else
+    {
+      const u32 size = CreateBlockLink(m_block, cg->getCurr<void*>(), newpc.value());
+      cg->setSize(cg->getSize() + size);
+    }
+  }
+
   m_block_ended = true;
 }
 
@@ -1683,7 +1716,6 @@ void CPU::NewRec::X64Compiler::CompileASMFunctions()
   CodeGenerator acg(g_code_buffer.GetFreeCodeSpace(), g_code_buffer.GetFreeCodePointer());
   CodeGenerator* cg = &acg;
 
-  Label event_test_and_dispatch;
   Label dispatch;
   Label exit_recompiler;
 
@@ -1722,16 +1754,19 @@ void CPU::NewRec::X64Compiler::CompileASMFunctions()
   }
 
   // check events then for frame done
-  g_event_test_and_dispatch = cg->getCurr();
+  g_check_events_and_dispatch = cg->getCurr();
   {
-    cg->L(event_test_and_dispatch);
-
-    Label check_interrupts;
+    Label update_downcount, check_interrupts;
     cg->mov(RXARG1, cg->qword[PTR(TimingEvents::GetHeadEventPtr())]);
     cg->mov(RWARG1, cg->dword[RXARG1 + offsetof(TimingEvent, m_downcount)]);
     cg->cmp(RWARG1, cg->dword[PTR(&g_state.pending_ticks)]);
-    cg->jg(check_interrupts, CodeGenerator::T_SHORT);
+    cg->jg(update_downcount, CodeGenerator::T_SHORT);
     cg->call(reinterpret_cast<const void*>(&TimingEvents::RunEvents));
+    cg->jmp(check_interrupts);
+
+    // TODO: this _shouldn't_ be necessary, because if we're flagging IRQ, then downcount should get restored.
+    cg->L(update_downcount);
+    cg->mov(cg->dword[PTR(&g_state.downcount)], RWARG1);
 
     cg->L(check_interrupts);
 
@@ -1802,4 +1837,18 @@ void CPU::NewRec::X64Compiler::CompileASMFunctions()
 void CPU::NewRec::CompileASMFunctions()
 {
   X64Compiler::CompileASMFunctions();
+}
+
+u32 CPU::NewRec::EmitJump(void* code, const void* dst)
+{
+  u8* ptr = static_cast<u8*>(code);
+  *(ptr++) = 0xE9; // jmp
+
+  const ptrdiff_t disp = (reinterpret_cast<uintptr_t>(dst) - reinterpret_cast<uintptr_t>(code)) - 5;
+  DebugAssert(disp >= static_cast<ptrdiff_t>(std::numeric_limits<s32>::min()) &&
+              disp <= static_cast<ptrdiff_t>(std::numeric_limits<s32>::max()));
+
+  const s32 disp32 = static_cast<s32>(disp);
+  std::memcpy(ptr, &disp32, sizeof(disp32));
+  return 5;
 }

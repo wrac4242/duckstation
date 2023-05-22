@@ -36,8 +36,9 @@ protected:
 
   void Reset(Block* block) override;
   void BeginBlock() override;
-  void EndBlock(std::optional<u32> newpc) override;
+  void EndBlock(const std::optional<u32>& newpc) override;
   void EndBlockWithException(Exception excode) override;
+  void EndAndLinkBlock(const std::optional<u32>& newpc);
   std::pair<const void*, u32> EndCompile() override;
 
   void Flush(u32 flags) override;

@@ -8,6 +8,8 @@
 #include "cpu_newrec_compiler.h"
 #include "cpu_newrec_private.h"
 #include "cpu_types.h"
+#include "settings.h"
+#include <unordered_map>
 #include <vector>
 Log_SetChannel(CPU::NewRec);
 
@@ -26,6 +28,8 @@ static void ResetLUTs();
 
 static u32 ReadBlockInstructions(u32 start_pc);
 static void AddBlockToPageList(Block* block);
+static void BacklinkBlocks(u32 pc, const void* dst);
+static void UnlinkBlockExits(Block* block);
 
 // Fast map provides lookup from PC to function
 // Function pointers are offset so that you don't need to subtract
@@ -35,6 +39,7 @@ static std::unique_ptr<const void*[]> s_lut_code_pointers;
 static std::unique_ptr<Block*[]> s_lut_block_pointers;
 static PageBlockLookupArray s_page_block_lookup;
 static std::vector<Block*> s_blocks;
+static BlockLinkMap s_block_links;
 static bool s_lut_initialized = false;
 
 // for compiling
@@ -45,7 +50,7 @@ JitCodeBuffer g_code_buffer;
 const void* g_enter_recompiler;
 const void* g_exit_recompiler;
 const void* g_compile_block;
-const void* g_event_test_and_dispatch;
+const void* g_check_events_and_dispatch;
 const void* g_dispatcher;
 
 static constexpr u32 RECOMPILER_GUARD_SIZE = 4096;
@@ -276,6 +281,7 @@ CPU::NewRec::Block* CPU::NewRec::CreateBlock(u32 pc)
   block->size = size;
   block->host_code = nullptr;
   block->next_block_in_page = nullptr;
+  block->num_exit_links = 0;
   block->invalidated = false;
   std::memcpy(block->Instructions(), s_block_instructions.data(), sizeof(Instruction) * size);
   s_block_map[table][idx] = block;
@@ -307,6 +313,7 @@ bool CPU::NewRec::RevalidateBlock(Block* block)
   AddBlockToPageList(block);
   return true;
 }
+
 void CPU::NewRec::CompileOrRevalidateBlock(u32 start_pc)
 {
   Block* block = LookupBlock(start_pc);
@@ -317,23 +324,29 @@ void CPU::NewRec::CompileOrRevalidateBlock(u32 start_pc)
     if (RevalidateBlock(block))
     {
       SetFastMap(start_pc, block->host_code);
+      BacklinkBlocks(start_pc, block->host_code);
       return;
     }
+
+    // remove outward links from this block, since we're recompiling it
+    UnlinkBlockExits(block);
   }
 
   block = CreateBlock(start_pc);
   if (!block)
     Panic("Failed to create block, TODO fallback to interpreter");
 
-  // TODO: Persist the compiler
   block->host_code = g_compiler->CompileBlock(block);
   if (!block->host_code)
   {
     // block failed to compile
+    // TODO: this shouldn't backlink
     block->host_code = &CPU::CodeCache::InterpretUncachedBlock<PGXPMode::Disabled>;
+    Panic("Block failed compilation");
   }
 
   SetFastMap(start_pc, block->host_code);
+  BacklinkBlocks(start_pc, block->host_code);
 }
 
 void CPU::NewRec::AddBlockToPageList(Block* block)
@@ -355,6 +368,45 @@ void CPU::NewRec::AddBlockToPageList(Block* block)
     entry.first = block;
     entry.second = block;
   }
+}
+
+u32 CPU::NewRec::CreateBlockLink(Block* block, void* code, u32 newpc)
+{
+  const void* dst = g_dispatcher;
+  if (g_settings.cpu_recompiler_block_linking)
+  {
+    const Block* next_block = LookupBlock(newpc);
+    dst = (next_block && !next_block->invalidated) ? next_block->host_code : g_compile_block;
+
+    BlockLinkMap::iterator iter = s_block_links.emplace(newpc, code);
+    DebugAssert(block->num_exit_links < MAX_BLOCK_EXIT_LINKS);
+    block->exit_links[block->num_exit_links++] = iter;
+  }
+
+  Log_DebugPrintf("Linking %p with dst pc %08X to %p%s", code, newpc, dst,
+                  (dst == g_compile_block) ? "[compiler]" : "");
+  return EmitJump(code, dst);
+}
+
+void CPU::NewRec::BacklinkBlocks(u32 pc, const void* dst)
+{
+  if (!g_settings.cpu_recompiler_block_linking)
+    return;
+
+  const auto link_range = s_block_links.equal_range(pc);
+  for (auto it = link_range.first; it != link_range.second; ++it)
+  {
+    Log_DebugPrintf("Backlinking %p with dst pc %08X to %p%s", it->second, pc, dst,
+                    (dst == g_compile_block) ? "[compiler]" : "");
+    EmitJump(it->second, dst);
+  }
+}
+
+void CPU::NewRec::UnlinkBlockExits(Block* block)
+{
+  for (u32 i = 0; i < block->num_exit_links; i++)
+    s_block_links.erase(block->exit_links[i]);
+  block->num_exit_links = 0;
 }
 
 void CPU::NewRec::InvalidCodeFunction()
@@ -403,10 +455,9 @@ void CPU::NewRec::InvalidateBlocksWithPageNumber(u32 index)
     if (!block->invalidated)
     {
       SetFastMap(block->pc, g_compile_block);
+      BacklinkBlocks(block->pc, g_compile_block);
       block->invalidated = true;
     }
-
-    // TODO: Unlink block
 
     Block* next_block = block->next_block_in_page;
     block->next_block_in_page = nullptr;
@@ -428,6 +479,7 @@ void CPU::NewRec::ClearBlocks()
     Bus::ClearRAMCodePage(i);
   }
 
+  s_block_links.clear();
   for (Block* block : s_blocks)
     std::free(block);
   s_blocks.clear();
