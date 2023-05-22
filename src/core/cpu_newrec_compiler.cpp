@@ -289,12 +289,13 @@ std::optional<u32> CPU::NewRec::Compiler::GetFreeHostReg(u32 flags)
 
   // find register with lowest counter
   // TODO: used analysis
+  // TODO: when allocating a caller-saved reg and there's none free, swap a callee-saved reg
   u32 lowest = NUM_HOST_REGS;
   u16 lowest_count = std::numeric_limits<u16>::max();
   for (u32 i = 0; i < NUM_HOST_REGS; i++)
   {
     const HostRegAlloc& ra = m_host_regs[i];
-    if (!(ra.flags & HR_USABLE))
+    if ((ra.flags & req_flags) != req_flags)
       continue;
 
     DebugAssert(ra.flags & HR_ALLOCATED);
@@ -619,6 +620,11 @@ void CPU::NewRec::Compiler::ClearHostRegsNeeded()
   for (u32 i = 0; i < NUM_HOST_REGS; i++)
   {
     HostRegAlloc& ra = m_host_regs[i];
+    if (!(ra.flags & HR_ALLOCATED))
+      continue;
+
+    // shouldn't have any temps left
+    DebugAssert(ra.type != HR_TYPE_TEMP);
 
     if (ra.flags & HR_MODE_WRITE)
       ra.flags |= HR_MODE_READ;
@@ -838,18 +844,18 @@ void CPU::NewRec::Compiler::CompileInstruction()
     case InstructionOp::xori: CompileTemplate(&Compiler::Compile_xori_const, &Compiler::Compile_xori, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE); break;
     case InstructionOp::lui: Compile_lui(); break;
 
-    case InstructionOp::lb: CompileLoadStoreTemplate(MemoryAccessSize::Byte, false, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
-    case InstructionOp::lbu: CompileLoadStoreTemplate(MemoryAccessSize::Byte, false, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
-    case InstructionOp::lh: CompileLoadStoreTemplate(MemoryAccessSize::HalfWord, false, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
-    case InstructionOp::lhu: CompileLoadStoreTemplate(MemoryAccessSize::HalfWord, false, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
-    case InstructionOp::lw: CompileLoadStoreTemplate(MemoryAccessSize::Word, false, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
-    case InstructionOp::lwl: Compile_Fallback(); break;
-    case InstructionOp::lwr: Compile_Fallback(); break;
-    case InstructionOp::sb: CompileLoadStoreTemplate(MemoryAccessSize::Byte, true, false, TF_READS_S | TF_READS_T); break;
-    case InstructionOp::sh: CompileLoadStoreTemplate(MemoryAccessSize::HalfWord, true, false, TF_READS_S | TF_READS_T); break;
-    case InstructionOp::sw: CompileLoadStoreTemplate(MemoryAccessSize::Word, true, false, TF_READS_S | TF_READS_T); break;
-    case InstructionOp::swl: Compile_Fallback(); break;
-    case InstructionOp::swr: Compile_Fallback(); break;
+    case InstructionOp::lb: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::Byte, false, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
+    case InstructionOp::lbu: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::Byte, false, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
+    case InstructionOp::lh: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::HalfWord, false, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
+    case InstructionOp::lhu: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::HalfWord, false, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
+    case InstructionOp::lw: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::Word, false, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
+    case InstructionOp::lwl: CompileLoadStoreTemplate(&Compiler::Compile_lwx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY | TF_FLUSH_LOAD_DELAY); break;
+    case InstructionOp::lwr: CompileLoadStoreTemplate(&Compiler::Compile_lwx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY | TF_FLUSH_LOAD_DELAY); break;
+    case InstructionOp::sb: CompileLoadStoreTemplate(&Compiler::Compile_sxx, MemoryAccessSize::Byte, true, false, TF_READS_S | TF_READS_T); break;
+    case InstructionOp::sh: CompileLoadStoreTemplate(&Compiler::Compile_sxx, MemoryAccessSize::HalfWord, true, false, TF_READS_S | TF_READS_T); break;
+    case InstructionOp::sw: CompileLoadStoreTemplate(&Compiler::Compile_sxx, MemoryAccessSize::Word, true, false, TF_READS_S | TF_READS_T); break;
+    case InstructionOp::swl: CompileLoadStoreTemplate(&Compiler::Compile_swx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY | TF_FLUSH_LOAD_DELAY); break;
+    case InstructionOp::swr: CompileLoadStoreTemplate(&Compiler::Compile_swx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY | TF_FLUSH_LOAD_DELAY); break;
 
     case InstructionOp::cop0:
       {
@@ -894,8 +900,8 @@ void CPU::NewRec::Compiler::CompileInstruction()
       }
       break;
 
-    case InstructionOp::lwc2: CompileLoadStoreTemplate(MemoryAccessSize::Word, false, false, TF_GTE_STALL | TF_READS_S | TF_LOAD_DELAY); break;
-    case InstructionOp::swc2: CompileLoadStoreTemplate(MemoryAccessSize::Word, true, false, TF_GTE_STALL | TF_READS_S); break;
+    case InstructionOp::lwc2: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::Word, false, false, TF_GTE_STALL | TF_READS_S | TF_LOAD_DELAY); break;
+    case InstructionOp::swc2: CompileLoadStoreTemplate(&Compiler::Compile_sxx, MemoryAccessSize::Word, true, false, TF_GTE_STALL | TF_READS_S); break;
 
     default: Panic("Fixme"); break;
       // clang-format on
@@ -929,8 +935,8 @@ void CPU::NewRec::Compiler::CompileBranchDelaySlot(bool dirty_pc /* = true */)
   m_current_instruction_branch_delay_slot = false;
 }
 
-void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(CompileFlags cf),
-                                            void (Compiler::*func)(CompileFlags cf), u32 tflags)
+void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(CompileFlags),
+                                            void (Compiler::*func)(CompileFlags), u32 tflags)
 {
   // TODO: This is where we will do memory operand optimization. Remember to kill constants!
   // TODO: Swap S and T if commutative
@@ -947,6 +953,8 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
 
   if (tflags & TF_GTE_STALL)
     StallUntilGTEComplete();
+  if (tflags & TF_FLUSH_LOAD_DELAY)
+    UpdateLoadDelay();
 
   // throw away instructions writing to $zero
   if (!(tflags & TF_NO_NOP) && (!g_settings.cpu_recompiler_memory_exceptions || !(tflags & TF_CAN_OVERFLOW)) &&
@@ -1048,7 +1056,8 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
     cf.valid_host_hi = true;
   }
 
-  const HostRegAllocType write_type = (tflags & TF_LOAD_DELAY && EMULATE_LOAD_DELAYS) ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG;
+  const HostRegAllocType write_type =
+    (tflags & TF_LOAD_DELAY && EMULATE_LOAD_DELAYS) ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG;
 
   if (tflags & TF_CAN_OVERFLOW && g_settings.cpu_recompiler_memory_exceptions)
   {
@@ -1101,13 +1110,18 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   }
 }
 
-void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool store, bool sign, u32 tflags)
+void CPU::NewRec::Compiler::CompileLoadStoreTemplate(void (Compiler::*func)(CompileFlags, MemoryAccessSize, bool,
+                                                                            const std::optional<VirtualMemoryAddress>&),
+                                                     MemoryAccessSize size, bool store, bool sign, u32 tflags)
 {
   const Reg rs = inst->i.rs;
   const Reg rt = inst->i.rt;
 
   if (tflags & TF_GTE_STALL)
     StallUntilGTEComplete();
+
+  if (tflags & TF_FLUSH_LOAD_DELAY)
+    UpdateLoadDelay();
 
   CompileFlags cf = {};
 
@@ -1117,6 +1131,7 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool
     cf.mips_t = static_cast<u8>(rt);
 
   // constant address?
+  // TODO: move this to the backend address calculation?
   std::optional<VirtualMemoryAddress> addr;
   if (HasConstantReg(rs))
   {
@@ -1146,7 +1161,7 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool
 
   // reads T -> store, writes T -> load
   // for now, we defer the allocation to afterwards, because C call
-  if (store)
+  if (tflags & TF_READS_T)
   {
     if (HasConstantReg(rt))
     {
@@ -1169,18 +1184,9 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool
         cf.valid_host_t = true;
       }
     }
-
-    Compile_Store(cf, size, std::move(addr));
   }
-  else
-  {
-    // invalidate T, we're overwriting it
-    // TODO: only if we're not emulating load delays
-    if (!EMULATE_LOAD_DELAYS && rt != Reg::zero && rs != rt)
-      DeleteMIPSReg(rt, false);
-
-    Compile_Load(cf, size, sign, std::move(addr));
-  }
+  
+  (this->*func)(cf, size, sign, addr);
 }
 
 void CPU::NewRec::Compiler::CompileMoveRegTemplate(Reg dst, Reg src)

@@ -74,7 +74,8 @@ protected:
   void Compile_divu(CompileFlags cf) override;
   void TestOverflow(const Xbyak::Reg32& result);
   void Compile_dst_op(CompileFlags cf, void (Xbyak::CodeGenerator::*op)(const Xbyak::Operand&, const Xbyak::Operand&),
-                      void (Xbyak::CodeGenerator::*op_const)(const Xbyak::Operand&, u32), bool commutative, bool overflow);
+                      void (Xbyak::CodeGenerator::*op_const)(const Xbyak::Operand&, u32), bool commutative,
+                      bool overflow);
   void Compile_add(CompileFlags cf) override;
   void Compile_addu(CompileFlags cf) override;
   void Compile_sub(CompileFlags cf) override;
@@ -87,11 +88,16 @@ protected:
   void Compile_slt(CompileFlags cf) override;
   void Compile_sltu(CompileFlags cf) override;
 
-  void ComputeLoadStoreAddressArg(CompileFlags cf, const std::optional<VirtualMemoryAddress>& address);
-  void Compile_Load(CompileFlags cf, MemoryAccessSize size, bool sign,
-                    const std::optional<VirtualMemoryAddress>& address) override;
-  void Compile_Store(CompileFlags cf, MemoryAccessSize size,
-                     const std::optional<VirtualMemoryAddress>& address) override;
+  void ComputeLoadStoreAddressArg(Xbyak::Reg32 dst, CompileFlags cf,
+                                  const std::optional<VirtualMemoryAddress>& address);
+  void Compile_lxx(CompileFlags cf, MemoryAccessSize size, bool sign,
+                   const std::optional<VirtualMemoryAddress>& address) override;
+  void Compile_lwx(CompileFlags cf, MemoryAccessSize size, bool sign,
+                   const std::optional<VirtualMemoryAddress>& address) override;
+  void Compile_sxx(CompileFlags cf, MemoryAccessSize size, bool sign,
+                   const std::optional<VirtualMemoryAddress>& address) override;
+  void Compile_swx(CompileFlags cf, MemoryAccessSize size, bool sign,
+                   const std::optional<VirtualMemoryAddress>& address) override;
 
   void TestInterrupts(const Xbyak::Reg32& sr);
   void Compile_mtc0(CompileFlags cf) override;

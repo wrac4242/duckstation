@@ -1114,30 +1114,35 @@ void CPU::NewRec::X64Compiler::Compile_slt(CompileFlags cf, bool sign)
   sign ? cg->setl(rd.cvt8()) : cg->setb(rd.cvt8());
 }
 
-void CPU::NewRec::X64Compiler::ComputeLoadStoreAddressArg(CompileFlags cf,
+void CPU::NewRec::X64Compiler::ComputeLoadStoreAddressArg(Reg32 dst, CompileFlags cf,
                                                           const std::optional<VirtualMemoryAddress>& address)
 {
   if (address.has_value())
   {
-    cg->mov(RWARG1, address.value());
+    cg->mov(dst, address.value());
   }
   else
   {
     if (cf.valid_host_s)
-      cg->mov(RWARG1, CFGetRegS(cf));
+    {
+      if (const Reg32 src = CFGetRegS(cf); src != dst)
+        cg->mov(dst, CFGetRegS(cf));
+    }
     else
-      cg->mov(RWARG1, MipsPtr(cf.MipsS()));
+    {
+      cg->mov(dst, MipsPtr(cf.MipsS()));
+    }
 
     if (const u32 imm = inst->i.imm_sext32(); imm != 0)
-      cg->add(RWARG1, inst->i.imm_sext32());
+      cg->add(dst, inst->i.imm_sext32());
   }
 }
 
-void CPU::NewRec::X64Compiler::Compile_Load(CompileFlags cf, MemoryAccessSize size, bool sign,
-                                            const std::optional<VirtualMemoryAddress>& address)
+void CPU::NewRec::X64Compiler::Compile_lxx(CompileFlags cf, MemoryAccessSize size, bool sign,
+                                           const std::optional<VirtualMemoryAddress>& address)
 {
   Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
-  ComputeLoadStoreAddressArg(cf, address);
+  ComputeLoadStoreAddressArg(RWARG1, cf, address);
 
   switch (size)
   {
@@ -1219,11 +1224,8 @@ void CPU::NewRec::X64Compiler::Compile_Load(CompileFlags cf, MemoryAccessSize si
     return;
 
   // TODO: option to turn off load delay?
-  Reg32 rt;
-  if constexpr (EMULATE_LOAD_DELAYS)
-    rt = Reg32(AllocateHostReg(HR_MODE_WRITE, Compiler::HR_TYPE_NEXT_LOAD_DELAY_VALUE, cf.MipsT()));
-  else
-    rt = Reg32(AllocateHostReg(HR_MODE_WRITE, Compiler::HR_TYPE_CPU_REG, cf.MipsT()));
+  const Reg32 rt = Reg32(
+    AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, cf.MipsT()));
 
   switch (size)
   {
@@ -1239,13 +1241,84 @@ void CPU::NewRec::X64Compiler::Compile_Load(CompileFlags cf, MemoryAccessSize si
   }
 }
 
-void CPU::NewRec::X64Compiler::Compile_Store(CompileFlags cf, MemoryAccessSize size,
-                                             const std::optional<VirtualMemoryAddress>& address)
+void CPU::NewRec::X64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize size, bool sign,
+                                           const std::optional<VirtualMemoryAddress>& address)
+{
+  DebugAssert(EMULATE_LOAD_DELAYS);
+
+  // TODO: if address is constant, this can be simplified..
+  // TODO: Share this
+  Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
+
+  // We'd need to be careful here if we weren't overwriting it..
+  const Reg32 addr = Reg32(AllocateHostReg(HR_CALLEE_SAVED, HR_TYPE_TEMP));
+  ComputeLoadStoreAddressArg(addr, cf, address);
+  cg->mov(RWARG1, addr);
+  cg->and_(RWARG1, ~0x3u);
+
+  cg->call(&Recompiler::Thunks::UncheckedReadMemoryWord);
+
+  if (inst->r.rt == Reg::zero)
+  {
+    FreeHostReg(addr.getIdx());
+    return;
+  }
+
+  // TODO: this can take over rt's value if it's no longer needed
+  // NOTE: can't trust T in cf because of the flush
+  const Reg rt = inst->r.rt;
+  const Reg32 value = Reg32(AllocateHostReg(HR_MODE_WRITE, HR_TYPE_NEXT_LOAD_DELAY_VALUE, rt));
+  DebugAssert(value != cg->ecx);
+  if (HasConstantReg(rt))
+    cg->mov(value, GetConstantRegU32(rt));
+  else if (const std::optional<u32> rtreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rt); rtreg.has_value())
+    cg->mov(value, Reg32(rtreg.value()));
+  else
+    cg->mov(value, MipsPtr(rt));    
+  
+
+  cg->mov(cg->ecx, addr);
+  cg->and_(cg->ecx, 3);
+  cg->shl(cg->ecx, 3); // *8
+
+  // TODO for other arch: reverse subtract
+  DebugAssert(RWARG2 != cg->ecx);
+  cg->mov(RWARG2, 24);
+  cg->sub(RWARG2, cg->ecx);
+
+  if (inst->op == InstructionOp::lwl)
+  {
+    // const u32 mask = UINT32_C(0x00FFFFFF) >> shift;
+    // new_value = (value & mask) | (RWRET << (24 - shift));
+    cg->mov(addr, 0xFFFFFFu);
+    cg->shr(addr, cg->cl);
+    cg->and_(value, addr);
+    cg->mov(cg->ecx, RWARG2);
+    cg->shl(RWRET, cg->cl);
+    cg->or_(value, RWRET);
+  }
+  else
+  {
+    // const u32 mask = UINT32_C(0xFFFFFF00) << (24 - shift);
+    // new_value = (value & mask) | (RWRET >> shift);
+    cg->shr(RWRET, cg->cl);
+    cg->mov(addr, 0xFFFFFF00u);
+    cg->mov(cg->ecx, RWARG2);
+    cg->shl(addr, cg->cl);
+    cg->and_(value, addr);
+    cg->or_(value, RWRET);
+  }
+
+  FreeHostReg(addr.getIdx());
+}
+
+void CPU::NewRec::X64Compiler::Compile_sxx(CompileFlags cf, MemoryAccessSize size, bool sign,
+                                           const std::optional<VirtualMemoryAddress>& address)
 {
   // TODO: Stores don't need to flush GTE cycles...
   Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
 
-  ComputeLoadStoreAddressArg(cf, address);
+  ComputeLoadStoreAddressArg(RWARG1, cf, address);
 
   // TODO: move this out
   if (inst->op == InstructionOp::swc2)
@@ -1293,6 +1366,80 @@ void CPU::NewRec::X64Compiler::Compile_Store(CompileFlags cf, MemoryAccessSize s
       cg->call(&Recompiler::Thunks::UncheckedWriteMemoryWord);
       break;
   }
+}
+
+void CPU::NewRec::X64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize size, bool sign,
+                                           const std::optional<VirtualMemoryAddress>& address)
+{
+  DebugAssert(EMULATE_LOAD_DELAYS);
+
+  // TODO: if address is constant, this can be simplified..
+  // TODO: Share this
+  Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
+
+  // We'd need to be careful here if we weren't overwriting it..
+  const Reg32 addr = Reg32(AllocateHostReg(HR_CALLEE_SAVED, HR_TYPE_TEMP));
+  ComputeLoadStoreAddressArg(addr, cf, address);
+  cg->mov(RWARG1, addr);
+  cg->and_(RWARG1, ~0x3u);
+
+  cg->call(&Recompiler::Thunks::UncheckedReadMemoryWord);
+
+  // TODO: this can take over rt's value if it's no longer needed
+  // NOTE: can't trust T in cf because of the flush
+  const Reg rt = inst->r.rt;
+  const Reg32 value = RWARG2;
+  DebugAssert(value != cg->ecx);
+  if (HasConstantReg(rt))
+    cg->mov(value, GetConstantRegU32(rt));
+  else if (const std::optional<u32> rtreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rt); rtreg.has_value())
+    cg->mov(value, Reg32(rtreg.value()));
+  else
+    cg->mov(value, MipsPtr(rt));
+
+  cg->mov(cg->ecx, addr);
+  cg->and_(cg->ecx, 3);
+  cg->shl(cg->ecx, 3); // *8
+
+  // TODO for other arch: reverse subtract
+  DebugAssert(RWARG3 != cg->ecx);
+  cg->mov(RWARG3, 24);
+  cg->sub(RWARG3, cg->ecx);
+
+  if (inst->op == InstructionOp::swl)
+  {
+    // const u32 mem_mask = UINT32_C(0xFFFFFF00) << shift;
+    // new_value = (RWRET & mem_mask) | (value >> (24 - shift));
+    cg->mov(RWARG3, 0xFFFFFF00u);
+    cg->shl(RWARG3, cg->cl);
+    cg->and_(RWRET, RWARG3);
+
+    cg->mov(RWARG3, 24);
+    cg->sub(RWARG3, cg->ecx);
+    cg->mov(cg->ecx, RWARG3);
+    cg->shr(value, cg->cl);
+    cg->or_(value, RWRET);
+  }
+  else
+  {
+    // const u32 mem_mask = UINT32_C(0x00FFFFFF) >> (24 - shift);
+    // new_value = (RWRET & mem_mask) | (value << shift);
+    cg->shl(value, cg->cl);
+    
+    cg->mov(RWARG3, 24);
+    cg->sub(RWARG3, cg->ecx);
+    cg->mov(cg->ecx, RWARG3);
+    cg->mov(RWARG3, 0x00FFFFFFu);
+    cg->shr(RWARG3, cg->cl);
+    cg->and_(RWRET, RWARG3);
+    cg->or_(value, RWRET);
+  }
+
+  FreeHostReg(addr.getIdx());
+
+  cg->mov(RWARG1, addr);
+  cg->and_(RWARG1, ~0x3u);
+  cg->call(&Recompiler::Thunks::UncheckedWriteMemoryWord);
 }
 
 void CPU::NewRec::X64Compiler::Compile_mtc0(CompileFlags cf)
@@ -1385,7 +1532,7 @@ void CPU::NewRec::X64Compiler::Compile_rfe(CompileFlags cf)
 void CPU::NewRec::X64Compiler::TestInterrupts(const Xbyak::Reg32& sr)
 {
   // need to test for interrupts, flush everything back, since we're gonna have to do it anyway, and this isn't hot
-  Flush(FLUSH_FLUSH_MIPS_REGISTERS);
+  Flush(FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_INTERRUPT);
 
   // if Iec == 0 then goto no_interrupt
   Label no_interrupt;
@@ -1421,7 +1568,8 @@ void CPU::NewRec::X64Compiler::Compile_mfc2(CompileFlags cf)
 
   if (action == GTERegisterAccessAction::Direct)
   {
-    const u32 hreg = AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, rt);
+    const u32 hreg =
+      AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, rt);
     cg->mov(Reg32(hreg), cg->dword[PTR(ptr)]);
   }
   else if (action == GTERegisterAccessAction::CallHandler)
@@ -1430,7 +1578,8 @@ void CPU::NewRec::X64Compiler::Compile_mfc2(CompileFlags cf)
     cg->mov(RWARG1, index);
     cg->call(&GTE::ReadRegister);
 
-    const u32 hreg = AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, rt);
+    const u32 hreg =
+      AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, rt);
     cg->mov(Reg32(hreg), RWRET);
   }
   else
@@ -1592,6 +1741,11 @@ void CPU::NewRec::X64Compiler::CompileASMFunctions()
       }
     }
 
+    // Downcount isn't set on entry, so we need to initialize it
+    cg->mov(RXARG1, cg->qword[PTR(TimingEvents::GetHeadEventPtr())]);
+    cg->mov(RWARG1, cg->dword[RXARG1 + offsetof(TimingEvent, m_downcount)]);
+    cg->mov(cg->dword[PTR(&g_state.downcount)], RWARG1);
+
     // Fall through to event dispatcher
   }
 
@@ -1602,8 +1756,8 @@ void CPU::NewRec::X64Compiler::CompileASMFunctions()
 
     Label check_interrupts;
     cg->mov(RXARG1, cg->qword[PTR(TimingEvents::GetHeadEventPtr())]);
-    cg->mov(RWARG2, cg->dword[RXARG1 + offsetof(TimingEvent, m_downcount)]);
-    cg->cmp(RWARG2, cg->dword[PTR(&g_state.pending_ticks)]);
+    cg->mov(RWARG1, cg->dword[RXARG1 + offsetof(TimingEvent, m_downcount)]);
+    cg->cmp(RWARG1, cg->dword[PTR(&g_state.pending_ticks)]);
     cg->jg(check_interrupts, CodeGenerator::T_SHORT);
     cg->call(reinterpret_cast<const void*>(&TimingEvents::RunEvents));
 
