@@ -424,6 +424,8 @@ void TimingEvent::Delay(TickCount ticks)
 
   DebugAssert(TimingEvents::s_current_event != this);
   TimingEvents::SortEvent(this);
+  if (TimingEvents::s_active_events_head == this)
+    TimingEvents::UpdateCPUDowncount();
 }
 
 void TimingEvent::Schedule(TickCount ticks)
@@ -443,7 +445,11 @@ void TimingEvent::Schedule(TickCount ticks)
     // Event is already active, so we leave the time since last run alone, and just modify the downcount.
     // If this is a call from an IO handler for example, re-sort the event queue.
     if (TimingEvents::s_current_event != this)
+    {
       TimingEvents::SortEvent(this);
+      if (TimingEvents::s_active_events_head == this)
+        TimingEvents::UpdateCPUDowncount();
+    }
   }
 }
 
@@ -468,7 +474,11 @@ void TimingEvent::Reset()
   m_downcount = m_interval;
   m_time_since_last_run = 0;
   if (TimingEvents::s_current_event != this)
+  {
     TimingEvents::SortEvent(this);
+    if (TimingEvents::s_active_events_head == this)
+      TimingEvents::UpdateCPUDowncount();
+  }
 }
 
 void TimingEvent::InvokeEarly(bool force /* = false */)
@@ -488,6 +498,8 @@ void TimingEvent::InvokeEarly(bool force /* = false */)
   // Since we've changed the downcount, we need to re-sort the events.
   DebugAssert(TimingEvents::s_current_event != this);
   TimingEvents::SortEvent(this);
+  if (TimingEvents::s_active_events_head == this)
+    TimingEvents::UpdateCPUDowncount();
 }
 
 void TimingEvent::Activate()

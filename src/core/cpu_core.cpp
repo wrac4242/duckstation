@@ -1746,6 +1746,9 @@ void DispatchInterrupt()
     Cop0Registers::CAUSE::MakeValueForException(Exception::INT, g_state.next_instruction_is_branch_delay_slot,
                                                 g_state.branch_was_taken, g_state.next_instruction.cop.cop_n),
     g_state.regs.pc);
+
+  // Fix up downcount, the pending IRQ set it to zero.
+  TimingEvents::UpdateCPUDowncount();
 }
 
 void UpdateDebugDispatcherFlag()
