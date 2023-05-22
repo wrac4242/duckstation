@@ -503,12 +503,12 @@ void Flush()
 
 void LogCurrentState()
 {
-#if 0
-  if ((TimingEvents::GetGlobalTickCounter() + GetPendingTicks()) == 8070051)
+#if 1
+  if ((TimingEvents::GetGlobalTickCounter() + GetPendingTicks()) == 2669376959)
     __debugbreak();
 #endif
-#if 0
-  if ((TimingEvents::GetGlobalTickCounter() + GetPendingTicks()) < 7856811)
+#if 1
+  if ((TimingEvents::GetGlobalTickCounter() + GetPendingTicks()) < 2669376959)
     return;
 #endif
   

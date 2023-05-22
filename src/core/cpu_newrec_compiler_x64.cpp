@@ -439,6 +439,7 @@ void CPU::NewRec::X64Compiler::Flush(u32 flags)
   if (flags & FLUSH_LOAD_DELAY_FROM_STATE && m_load_delay_dirty)
   {
     // This sucks :(
+    // TODO: make it a function?
     Label no_load_delay;
     cg->movzx(RWARG1, cg->byte[PTR(&g_state.load_delay_reg)]);
     cg->cmp(RWARG1, static_cast<u8>(Reg::count));
@@ -488,6 +489,7 @@ void CPU::NewRec::X64Compiler::Flush(u32 flags)
       (m_cycles == 1) ? cg->inc(RWARG1) : cg->add(RWARG1, m_cycles);
       cg->mov(cg->dword[PTR(&g_state.pending_ticks)], RWARG1);
       m_gte_done_cycle -= m_cycles;
+      m_cycles = 0;
     }
 
     (m_gte_done_cycle == 1) ? cg->inc(RWARG1) : cg->add(RWARG1, m_gte_done_cycle);
@@ -524,7 +526,7 @@ void CPU::NewRec::X64Compiler::Compile_Fallback()
   cg->mov(cg->byte[PTR(&g_state.next_load_delay_reg)], static_cast<u32>(Reg::count));
   cg->L(no_load_delay);
 
-  m_load_delay_dirty = true;
+  m_load_delay_dirty = EMULATE_LOAD_DELAYS;
 }
 
 void CPU::NewRec::X64Compiler::CheckBranchTarget(const Xbyak::Reg32& pcreg)
@@ -1218,7 +1220,7 @@ void CPU::NewRec::X64Compiler::Compile_Load(CompileFlags cf, MemoryAccessSize si
 
   // TODO: option to turn off load delay?
   Reg32 rt;
-  if constexpr (true)
+  if constexpr (EMULATE_LOAD_DELAYS)
     rt = Reg32(AllocateHostReg(HR_MODE_WRITE, Compiler::HR_TYPE_NEXT_LOAD_DELAY_VALUE, cf.MipsT()));
   else
     rt = Reg32(AllocateHostReg(HR_MODE_WRITE, Compiler::HR_TYPE_CPU_REG, cf.MipsT()));
@@ -1240,6 +1242,7 @@ void CPU::NewRec::X64Compiler::Compile_Load(CompileFlags cf, MemoryAccessSize si
 void CPU::NewRec::X64Compiler::Compile_Store(CompileFlags cf, MemoryAccessSize size,
                                              const std::optional<VirtualMemoryAddress>& address)
 {
+  // TODO: Stores don't need to flush GTE cycles...
   Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
 
   ComputeLoadStoreAddressArg(cf, address);
@@ -1418,7 +1421,7 @@ void CPU::NewRec::X64Compiler::Compile_mfc2(CompileFlags cf)
 
   if (action == GTERegisterAccessAction::Direct)
   {
-    const u32 hreg = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_NEXT_LOAD_DELAY_VALUE, rt);
+    const u32 hreg = AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, rt);
     cg->mov(Reg32(hreg), cg->dword[PTR(ptr)]);
   }
   else if (action == GTERegisterAccessAction::CallHandler)
@@ -1427,7 +1430,7 @@ void CPU::NewRec::X64Compiler::Compile_mfc2(CompileFlags cf)
     cg->mov(RWARG1, index);
     cg->call(&GTE::ReadRegister);
 
-    const u32 hreg = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_NEXT_LOAD_DELAY_VALUE, rt);
+    const u32 hreg = AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, rt);
     cg->mov(Reg32(hreg), RWRET);
   }
   else

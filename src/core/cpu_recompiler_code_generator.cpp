@@ -973,8 +973,10 @@ void CodeGenerator::BlockPrologue()
   EmitFunctionCall(nullptr, &Thunks::LogPC, Value::FromConstantU32(m_pc));
 #endif
 
+#if 0
   if (m_block->uncached_fetch_ticks > 0 || m_block->icache_line_count > 0)
     EmitICacheCheckAndUpdate();
+#endif
 
   // we don't know the state of the last block, so assume load delays might be in progress
   // TODO: Pull load delay into register cache
@@ -1109,7 +1111,9 @@ void CodeGenerator::AddPendingCycles(bool commit)
 
   if (commit)
   {
-    m_gte_done_cycle = std::max<TickCount>(m_gte_done_cycle - m_delayed_cycles_add, 0);
+    //m_gte_done_cycle = std::max<TickCount>(m_gte_done_cycle - m_delayed_cycles_add, 0);
+    m_gte_done_cycle = 0;
+    m_gte_busy_cycles_dirty = true;
     m_delayed_cycles_add = 0;
   }
 }

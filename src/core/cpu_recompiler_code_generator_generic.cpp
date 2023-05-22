@@ -32,6 +32,8 @@ void CodeGenerator::EmitStoreInterpreterLoadDelay(Reg reg, const Value& value)
 Value CodeGenerator::EmitLoadGuestMemory(const CodeBlockInstruction& cbi, const Value& address,
                                          const SpeculativeValue& address_spec, RegSize size)
 {
+#if 0
+  // TODO: re-enable once implemented in new-rec
   if (address.IsConstant() && !SpeculativeIsCacheIsolated())
   {
     TickCount read_ticks;
@@ -59,6 +61,7 @@ Value CodeGenerator::EmitLoadGuestMemory(const CodeBlockInstruction& cbi, const 
       return result;
     }
   }
+#endif
 
   Value result = m_register_cache.AllocateScratch(HostPointerSize);
 
@@ -118,6 +121,8 @@ Value CodeGenerator::EmitLoadGuestMemory(const CodeBlockInstruction& cbi, const 
 void CodeGenerator::EmitStoreGuestMemory(const CodeBlockInstruction& cbi, const Value& address,
                                          const SpeculativeValue& address_spec, RegSize size, const Value& value)
 {
+#if 0
+  // TODO: re-enable once implemented in new-rec
   if (address.IsConstant() && !SpeculativeIsCacheIsolated())
   {
     void* ptr = GetDirectWriteMemoryPointer(
@@ -134,6 +139,7 @@ void CodeGenerator::EmitStoreGuestMemory(const CodeBlockInstruction& cbi, const 
       return;
     }
   }
+#endif
 
   const bool use_fastmem =
     (address_spec ? Bus::CanUseFastmemForAddress(*address_spec) : true) && !SpeculativeIsCacheIsolated();

@@ -47,7 +47,7 @@ void CPU::NewRec::Compiler::Reset(Block* block)
   m_constant_reg_values[static_cast<u32>(Reg::zero)] = 0;
   m_constant_regs_valid.set(static_cast<u32>(Reg::zero));
 
-  m_load_delay_dirty = true;
+  m_load_delay_dirty = EMULATE_LOAD_DELAYS;
   m_load_delay_register = Reg::count;
   m_load_delay_value_register = NUM_HOST_REGS;
 }
@@ -66,7 +66,7 @@ const void* CPU::NewRec::Compiler::CompileBlock(Block* block)
 {
   Reset(block);
 
-  Log_DebugPrintf("Block range: %08X -> %08X", m_block->pc, block->pc + block->size * sizeof(Instruction));
+  Log_DebugPrintf("Block range: %08X -> %08X", block->pc, block->pc + block->size * sizeof(Instruction));
 
   BeginBlock();
 
@@ -105,8 +105,16 @@ const void* CPU::NewRec::Compiler::CompileBlock(Block* block)
 void CPU::NewRec::Compiler::SetConstantReg(Reg r, u32 v)
 {
   DebugAssert(r < Reg::count && r != Reg::zero);
+
+  // There might still be an incoming load delay which we need to cancel.
+  CancelLoadDelaysToReg(r);
+
   if (m_constant_regs_valid.test(static_cast<u32>(r)) && m_constant_reg_values[static_cast<u8>(r)] == v)
+  {
+    // Shouldn't be any host regs though.
+    DebugAssert(!CheckHostReg(0, HR_TYPE_CPU_REG, r).has_value());
     return;
+  }
 
   m_constant_reg_values[static_cast<u32>(r)] = v;
   m_constant_regs_valid.set(static_cast<u32>(r));
@@ -140,8 +148,35 @@ void CPU::NewRec::Compiler::UpdateLoadDelay()
 
     // have to invalidate registers, we might have one of them cached
     // TODO: double check the order here, will we trash a new value? we shouldn't...
+    // thankfully since this only happens on the first instruction, we can get away with just killing anything which
+    // isn't in write mode, because nothing could've been written before it, and the new value overwrites any
+    // load-delayed value
     Log_DebugPrintf("Invalidating non-dirty registers, and flushing load delay from state");
-    Flush(FLUSH_INVALIDATE_NON_DIRTY_MIPS_REGISTERS | FLUSH_LOAD_DELAY_FROM_STATE);
+
+    constexpr u32 req_flags = (HR_ALLOCATED | HR_MODE_WRITE);
+
+    for (u32 i = 0; i < NUM_HOST_REGS; i++)
+    {
+      HostRegAlloc& ra = m_host_regs[i];
+      if (ra.type != HR_TYPE_CPU_REG || !IsHostRegAllocated(i) || ((ra.flags & req_flags) == req_flags))
+        continue;
+
+      Log_DebugPrintf("Freeing non-dirty cached register %s in %s", GetRegName(ra.reg), GetHostRegName(i));
+      DebugAssert(!(ra.flags & HR_MODE_WRITE));
+      ClearHostReg(i);
+    }
+
+    // remove any non-dirty constants too
+    for (u32 i = 1; i < static_cast<u32>(Reg::count); i++)
+    {
+      if (!HasConstantReg(static_cast<Reg>(i)) || HasDirtyConstantReg(static_cast<Reg>(i)))
+        continue;
+
+      Log_DebugPrintf("Clearing non-dirty constant %s", GetRegName(static_cast<Reg>(i)));
+      ClearConstantReg(static_cast<Reg>(i));
+    }
+
+    Flush(FLUSH_LOAD_DELAY_FROM_STATE);
   }
 
   // commit the delayed register load
@@ -616,6 +651,7 @@ void CPU::NewRec::Compiler::DeleteMIPSReg(Reg reg, bool flush)
 
 void CPU::NewRec::Compiler::Flush(u32 flags)
 {
+  // TODO: Flush unneeded caller-saved regs (backup/replace calle-saved needed with caller-saved)
   if (flags & (FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_FREE_ALL_REGISTERS))
   {
     const u32 req_mask = (flags & FLUSH_FREE_ALL_REGISTERS) ? HR_ALLOCATED : (HR_ALLOCATED | HR_CALLEE_SAVED);
@@ -653,31 +689,6 @@ void CPU::NewRec::Compiler::Flush(u32 flags)
 
       // flush any constant registers which are dirty too
       FlushConstantRegs(false);
-    }
-
-    if (flags & FLUSH_INVALIDATE_NON_DIRTY_MIPS_REGISTERS)
-    {
-      constexpr u32 req_flags = (HR_ALLOCATED | HR_MODE_WRITE);
-
-      for (u32 i = 0; i < NUM_HOST_REGS; i++)
-      {
-        HostRegAlloc& ra = m_host_regs[i];
-        if (ra.type != HR_TYPE_CPU_REG || ((ra.flags & req_flags) != req_flags))
-          continue;
-
-        Log_DebugPrintf("Freeing non-dirty cached register %s in %s", GetRegName(ra.reg), GetHostRegName(i));
-        FreeHostReg(i);
-      }
-
-      // remove any non-dirty constants too
-      for (u32 i = 1; i < static_cast<u32>(Reg::count); i++)
-      {
-        if (!HasConstantReg(static_cast<Reg>(i)) || HasDirtyConstantReg(static_cast<Reg>(i)))
-          continue;
-
-        Log_DebugPrintf("Clearing non-dirty constant %s", GetRegName(static_cast<Reg>(i)));
-        ClearConstantReg(static_cast<Reg>(i));
-      }
     }
   }
 }
@@ -1037,7 +1048,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
     cf.valid_host_hi = true;
   }
 
-  const HostRegAllocType write_type = (tflags & TF_LOAD_DELAY) ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG;
+  const HostRegAllocType write_type = (tflags & TF_LOAD_DELAY && EMULATE_LOAD_DELAYS) ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG;
 
   if (tflags & TF_CAN_OVERFLOW && g_settings.cpu_recompiler_memory_exceptions)
   {
@@ -1117,6 +1128,7 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool
     if constexpr (HAS_MEMORY_OPERANDS)
     {
       // don't bother caching it since we're going to flush anyway
+      // TODO: make less rubbish, if it's caller saved we don't need to flush...
       const std::optional<u32> hreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rs);
       if (hreg.has_value())
       {
@@ -1164,10 +1176,8 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool
   {
     // invalidate T, we're overwriting it
     // TODO: only if we're not emulating load delays
-#if 0
-    if (rt != Reg::zero && rs != rt)
-      DeleteGuestReg(rt, false);
-#endif
+    if (!EMULATE_LOAD_DELAYS && rt != Reg::zero && rs != rt)
+      DeleteMIPSReg(rt, false);
 
     Compile_Load(cf, size, sign, std::move(addr));
   }
@@ -1727,6 +1737,11 @@ void CPU::NewRec::Compiler::AddGTETicks(TickCount ticks)
 
 void CPU::NewRec::Compiler::StallUntilGTEComplete()
 {
+  // TODO: hack to match old rec.. this may or may not be correct behavior
+  // it's the difference between stalling before and after the current instruction's cycle
+  DebugAssert(m_cycles > 0);
+  m_cycles--;
+
   if (!m_dirty_gte_done_cycle)
   {
     // simple case - in block scheduling
@@ -1735,11 +1750,13 @@ void CPU::NewRec::Compiler::StallUntilGTEComplete()
       Log_DebugPrintf("Stalling for %d ticks from GTE", m_gte_done_cycle - m_cycles);
       m_cycles += (m_gte_done_cycle - m_cycles);
     }
-
-    return;
+  }
+  else
+  {
+    // switch to in block scheduling
+    Log_DebugPrintf("Flushing GTE stall from state");
+    Flush(FLUSH_GTE_STALL_FROM_STATE);
   }
 
-  // switch to in block scheduling
-  Log_DebugPrintf("Flushing GTE stall from state");
-  Flush(FLUSH_GTE_STALL_FROM_STATE);
+  m_cycles++;
 }

@@ -182,8 +182,10 @@ void CPU::NewRec::SetFastMap(u32 pc, const void* function)
   const u32 table = pc >> LUT_TABLE_SHIFT;
   CodeLUT encoded_ptr = g_fast_map[table];
 
+#ifdef _DEBUG
   const CodeLUT table_ptr = DecodeCodeLUTPointer(table, encoded_ptr);
   DebugAssert(table_ptr != nullptr && table_ptr != s_lut_code_pointers.get());
+#endif
 
   *OffsetCodeLUTPointer(encoded_ptr, pc) = function;
 }
