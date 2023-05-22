@@ -29,11 +29,13 @@ void CPU::NewRec::Compiler::Reset(Block* block)
   m_block = block;
   m_compiler_pc = block->pc;
   m_cycles = 0;
+  m_gte_done_cycle = 0;
   inst = nullptr;
   m_current_instruction_pc = 0;
   m_current_instruction_branch_delay_slot = false;
   m_dirty_pc = false;
   m_dirty_instruction_bits = false;
+  m_dirty_gte_done_cycle = true;
   m_constant_reg_values.fill(0);
   m_constant_regs_valid.reset();
   m_constant_regs_dirty.reset();
@@ -696,9 +698,11 @@ void CPU::NewRec::Compiler::BackupHostState()
   // need to back up everything...
   HostStateBackup& bu = m_host_state_backup[m_host_state_backup_count];
   bu.cycles = m_cycles;
+  bu.gte_done_cycle = m_gte_done_cycle;
   bu.compiler_pc = m_compiler_pc;
   bu.dirty_pc = m_dirty_pc;
   bu.dirty_instruction_bits = m_dirty_instruction_bits;
+  bu.dirty_gte_done_cycle = m_dirty_gte_done_cycle;
   bu.block_ended = m_block_ended;
   bu.inst = inst;
   bu.current_instruction_pc = m_current_instruction_pc;
@@ -730,6 +734,7 @@ void CPU::NewRec::Compiler::RestoreHostState()
   m_current_instruction_pc = bu.current_instruction_pc;
   inst = bu.inst;
   m_block_ended = bu.block_ended;
+  m_dirty_gte_done_cycle = bu.dirty_gte_done_cycle;
   m_dirty_instruction_bits = bu.dirty_instruction_bits;
   m_dirty_pc = bu.dirty_pc;
   m_compiler_pc = bu.compiler_pc;
@@ -739,6 +744,7 @@ void CPU::NewRec::Compiler::RestoreHostState()
   m_load_delay_value_register = bu.load_delay_value_register;
   m_next_load_delay_register = bu.next_load_delay_register;
   m_next_load_delay_value_register = bu.next_load_delay_value_register;
+  m_gte_done_cycle = bu.gte_done_cycle;
   m_cycles = bu.cycles;
 }
 
@@ -927,7 +933,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   Reg rs = inst->r.rs.GetValue();
   Reg rt = inst->r.rt.GetValue();
   Reg rd = inst->r.rd.GetValue();
-  
+
   if (tflags & TF_GTE_STALL)
     StallUntilGTEComplete();
 
@@ -1125,8 +1131,6 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(MemoryAccessSize size, bool
       cf.valid_host_s = true;
     }
   }
-
-
 
   // reads T -> store, writes T -> load
   // for now, we defer the allocation to afterwards, because C call
@@ -1716,10 +1720,26 @@ CPU::NewRec::Compiler::GetGTERegisterPointer(u32 index, bool writing)
 
 void CPU::NewRec::Compiler::AddGTETicks(TickCount ticks)
 {
-  //
+  // TODO: check, int has +1 here
+  m_gte_done_cycle = m_cycles + ticks;
+  Log_DebugPrintf("Adding %d GTE ticks", ticks);
 }
 
 void CPU::NewRec::Compiler::StallUntilGTEComplete()
 {
-  //
+  if (!m_dirty_gte_done_cycle)
+  {
+    // simple case - in block scheduling
+    if (m_gte_done_cycle > m_cycles)
+    {
+      Log_DebugPrintf("Stalling for %d ticks from GTE", m_gte_done_cycle - m_cycles);
+      m_cycles += (m_gte_done_cycle - m_cycles);
+    }
+
+    return;
+  }
+
+  // switch to in block scheduling
+  Log_DebugPrintf("Flushing GTE stall from state");
+  Flush(FLUSH_GTE_STALL_FROM_STATE);
 }

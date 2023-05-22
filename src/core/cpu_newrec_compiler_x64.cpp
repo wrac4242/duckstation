@@ -40,6 +40,9 @@ Log_SetChannel(CPU::NewRec);
 
 using namespace Xbyak;
 
+// TODO: register renaming, obviously
+// TODO: try using a pointer to state instead of rip-relative.. it might end up faster due to smaller code
+
 static bool IsCallerSavedRegister(int id)
 {
 #ifdef _WIN32
@@ -333,27 +336,7 @@ Xbyak::Reg32 CPU::NewRec::X64Compiler::MoveSToD(CompileFlags cf)
   DebugAssert(!cf.valid_host_t || cf.host_t != cf.host_d);
 
   const Reg32 rd = CFGetRegD(cf);
-#if 0
-  if (cf.valid_host_s)
-  {
-    const Reg32 rs = CFGetRegS(cf);
-    if (rd != rs)
-      cg->mov(rd, CFGetRegS(cf));
-  }
-  else if (cf.const_s)
-  {
-    if (const u32 cv = GetConstantRegU32(cf.MipsS()); cv != 0)
-      cg->mov(rd, GetConstantRegU32(cf.MipsS()));
-    else
-      cg->xor_(rd, rd);
-  }
-  else
-  {
-    cg->mov(rd, MipsPtr(cf.MipsS()));
-  }
-#else
   MoveSToReg(rd, cf);
-#endif
 
   return rd;
 }
@@ -453,12 +436,6 @@ void CPU::NewRec::X64Compiler::Flush(u32 flags)
     cg->mov(cg->byte[PTR(&g_state.current_instruction_in_branch_delay_slot)], m_current_instruction_branch_delay_slot);
   }
 
-  if (flags & FLUSH_CYCLES && m_cycles > 0)
-  {
-    cg->add(cg->dword[PTR(&g_state.pending_ticks)], m_cycles);
-    m_cycles = 0;
-  }
-
   if (flags & FLUSH_LOAD_DELAY_FROM_STATE && m_load_delay_dirty)
   {
     // This sucks :(
@@ -482,6 +459,49 @@ void CPU::NewRec::X64Compiler::Flush(u32 flags)
     cg->mov(cg->byte[PTR(&g_state.load_delay_reg)], static_cast<u8>(m_load_delay_register));
     m_load_delay_register = Reg::count;
     m_load_delay_dirty = true;
+  }
+
+  if (flags & FLUSH_GTE_STALL_FROM_STATE && m_dirty_gte_done_cycle)
+  {
+    // May as well flush cycles while we're here.
+    // GTE spanning blocks is very rare, we _could_ disable this for speed.
+    cg->mov(RWARG1, cg->dword[PTR(&g_state.pending_ticks)]);
+    cg->mov(RWARG2, cg->dword[PTR(&g_state.gte_completion_tick)]);
+    if (m_cycles > 0)
+    {
+      (m_cycles == 1) ? cg->inc(RWARG1) : cg->add(RWARG1, m_cycles);
+      m_cycles = 0;
+    }
+    cg->cmp(RWARG2, RWARG1);
+    cg->cmova(RWARG1, RWARG2);
+    cg->mov(cg->dword[PTR(&g_state.pending_ticks)], RWARG1);
+    m_dirty_gte_done_cycle = false;
+  }
+
+  if (flags & FLUSH_GTE_DONE_CYCLE && m_gte_done_cycle > m_cycles)
+  {
+    cg->mov(RWARG1, cg->dword[PTR(&g_state.pending_ticks)]);
+
+    // update cycles at the same time
+    if (flags & FLUSH_CYCLES && m_cycles > 0)
+    {
+      (m_cycles == 1) ? cg->inc(RWARG1) : cg->add(RWARG1, m_cycles);
+      cg->mov(cg->dword[PTR(&g_state.pending_ticks)], RWARG1);
+      m_gte_done_cycle -= m_cycles;
+    }
+
+    (m_gte_done_cycle == 1) ? cg->inc(RWARG1) : cg->add(RWARG1, m_gte_done_cycle);
+    cg->mov(cg->dword[PTR(&g_state.gte_completion_tick)], RWARG1);
+    m_gte_done_cycle = 0;
+    m_dirty_gte_done_cycle = true;
+  }
+
+  if (flags & FLUSH_CYCLES && m_cycles > 0)
+  {
+    (m_cycles == 1) ? cg->inc(cg->dword[PTR(&g_state.pending_ticks)]) :
+                      cg->add(cg->dword[PTR(&g_state.pending_ticks)], m_cycles);
+    m_gte_done_cycle = std::max<TickCount>(m_gte_done_cycle - m_cycles, 0);
+    m_cycles = 0;
   }
 }
 
@@ -1114,8 +1134,8 @@ void CPU::NewRec::X64Compiler::ComputeLoadStoreAddressArg(CompileFlags cf,
 void CPU::NewRec::X64Compiler::Compile_Load(CompileFlags cf, MemoryAccessSize size, bool sign,
                                             const std::optional<VirtualMemoryAddress>& address)
 {
-  ComputeLoadStoreAddressArg(cf, address);
   Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
+  ComputeLoadStoreAddressArg(cf, address);
 
   switch (size)
   {
@@ -1220,6 +1240,8 @@ void CPU::NewRec::X64Compiler::Compile_Load(CompileFlags cf, MemoryAccessSize si
 void CPU::NewRec::X64Compiler::Compile_Store(CompileFlags cf, MemoryAccessSize size,
                                              const std::optional<VirtualMemoryAddress>& address)
 {
+  Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
+
   ComputeLoadStoreAddressArg(cf, address);
 
   // TODO: move this out
@@ -1255,7 +1277,6 @@ void CPU::NewRec::X64Compiler::Compile_Store(CompileFlags cf, MemoryAccessSize s
   {
     MoveTToReg(RWARG2, cf);
   }
-  Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
 
   switch (size)
   {

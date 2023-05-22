@@ -38,14 +38,16 @@ protected:
     FLUSH_CYCLES = (1 << 7),
     FLUSH_LOAD_DELAY = (1 << 8),
     FLUSH_LOAD_DELAY_FROM_STATE = (1 << 9),
+    FLUSH_GTE_DONE_CYCLE = (1 << 10),
+    FLUSH_GTE_STALL_FROM_STATE = (1 << 11),
 
     FLUSH_FOR_C_CALL = (FLUSH_FREE_CALLER_SAVED_REGISTERS),
-    FLUSH_FOR_LOADSTORE = (FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_CYCLES),
+    FLUSH_FOR_LOADSTORE = (FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_CYCLES | FLUSH_GTE_DONE_CYCLE),
     FLUSH_FOR_BRANCH = (FLUSH_FLUSH_MIPS_REGISTERS),
     FLUSH_FOR_INTERPRETER =
       (FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_INVALIDATE_MIPS_REGISTERS | FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_PC |
-       FLUSH_CYCLES | FLUSH_INSTRUCTION_BITS | FLUSH_LOAD_DELAY),
-    FLUSH_END_BLOCK = 0xFFFFFFFFu & ~(FLUSH_PC | FLUSH_INSTRUCTION_BITS),
+       FLUSH_CYCLES | FLUSH_INSTRUCTION_BITS | FLUSH_LOAD_DELAY | FLUSH_GTE_DONE_CYCLE),
+    FLUSH_END_BLOCK = 0xFFFFFFFFu & ~(FLUSH_PC | FLUSH_INSTRUCTION_BITS | FLUSH_GTE_STALL_FROM_STATE),
   };
 
   union CompileFlags
@@ -343,6 +345,7 @@ protected:
   Block* m_block = nullptr;
   u32 m_compiler_pc = 0;
   TickCount m_cycles = 0;
+  TickCount m_gte_done_cycle = 0;
 
   const Instruction* inst = nullptr;
   u32 m_current_instruction_pc = 0;
@@ -350,6 +353,7 @@ protected:
 
   bool m_dirty_pc = false;
   bool m_dirty_instruction_bits = false;
+  bool m_dirty_gte_done_cycle = false;
   bool m_block_ended = false;
 
   std::bitset<static_cast<size_t>(Reg::count)> m_constant_regs_valid = {};
@@ -369,9 +373,11 @@ protected:
   struct HostStateBackup
   {
     TickCount cycles;
+    TickCount gte_done_cycle;
     u32 compiler_pc;
     bool dirty_pc;
     bool dirty_instruction_bits;
+    bool dirty_gte_done_cycle;
     bool block_ended;
     const Instruction* inst;
     u32 current_instruction_pc;
