@@ -273,9 +273,10 @@ void RunEvents()
   DebugAssert(!s_current_event);
 
   TickCount pending_ticks = CPU::GetPendingTicks();
-  CPU::ResetPendingTicks();
   while (pending_ticks > 0)
   {
+    CPU::ResetPendingTicks();
+
     const TickCount time = std::min(pending_ticks, s_active_events_head->GetDowncount());
     s_global_tick_counter += static_cast<u32>(time);
     pending_ticks -= time;
@@ -306,6 +307,8 @@ void RunEvents()
       if (event->m_active)
         SortEvent(event);
     }
+
+    pending_ticks = CPU::GetPendingTicks();
   }
 
   s_current_event = nullptr;
