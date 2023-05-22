@@ -108,7 +108,7 @@ protected:
   void Compile_cop2(CompileFlags cf) override;
 
 private:
-  static void CompileThunk(u32 start_pc);
+  static bool IsCallerSavedRegister(u32 id);
 
   Xbyak::Address MipsPtr(Reg r) const;
   Xbyak::Reg32 CFGetRegD(CompileFlags cf) const;

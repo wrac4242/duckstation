@@ -36,6 +36,7 @@ void CPU::NewRec::Compiler::Reset(Block* block)
   m_dirty_pc = false;
   m_dirty_instruction_bits = false;
   m_dirty_gte_done_cycle = true;
+  m_block_ended = false;
   m_constant_reg_values.fill(0);
   m_constant_regs_valid.reset();
   m_constant_regs_dirty.reset();

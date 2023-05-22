@@ -43,7 +43,20 @@ using namespace Xbyak;
 // TODO: register renaming, obviously
 // TODO: try using a pointer to state instead of rip-relative.. it might end up faster due to smaller code
 
-static bool IsCallerSavedRegister(int id)
+namespace CPU::CodeCache {
+void LogCurrentState();
+}
+
+namespace CPU::NewRec {
+X64Compiler s_instance;
+Compiler* CPU::NewRec::g_compiler = &s_instance;
+} // namespace CPU::NewRec
+
+CPU::NewRec::X64Compiler::X64Compiler() = default;
+
+CPU::NewRec::X64Compiler::~X64Compiler() = default;
+
+bool CPU::NewRec::X64Compiler::IsCallerSavedRegister(u32 id)
 {
 #ifdef _WIN32
   // The x64 ABI considers the registers RAX, RCX, RDX, R8, R9, R10, R11, and XMM0-XMM5 volatile.
@@ -53,14 +66,6 @@ static bool IsCallerSavedRegister(int id)
   return (id <= 2 || id == 6 || id == 7 || (id >= 8 && id <= 11));
 #endif
 }
-
-namespace CPU::CodeCache {
-void LogCurrentState();
-}
-
-CPU::NewRec::X64Compiler::X64Compiler() = default;
-
-CPU::NewRec::X64Compiler::~X64Compiler() = default;
 
 void CPU::NewRec::X64Compiler::Reset(Block* block)
 {
@@ -1274,8 +1279,7 @@ void CPU::NewRec::X64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize siz
   else if (const std::optional<u32> rtreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rt); rtreg.has_value())
     cg->mov(value, Reg32(rtreg.value()));
   else
-    cg->mov(value, MipsPtr(rt));    
-  
+    cg->mov(value, MipsPtr(rt));
 
   cg->mov(cg->ecx, addr);
   cg->and_(cg->ecx, 3);
@@ -1425,7 +1429,7 @@ void CPU::NewRec::X64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize siz
     // const u32 mem_mask = UINT32_C(0x00FFFFFF) >> (24 - shift);
     // new_value = (RWRET & mem_mask) | (value << shift);
     cg->shl(value, cg->cl);
-    
+
     cg->mov(RWARG3, 24);
     cg->sub(RWARG3, cg->ecx);
     cg->mov(cg->ecx, RWARG3);
@@ -1674,38 +1678,6 @@ void CPU::NewRec::X64Compiler::Compile_cop2(CompileFlags cf)
   AddGTETicks(func_ticks);
 }
 
-void CPU::NewRec::X64Compiler::CompileThunk(u32 start_pc)
-{
-  // TODO: share this
-
-  Block* block = LookupBlock(start_pc);
-  if (block)
-  {
-    // we should only be here if the block got invalidated
-    DebugAssert(block->invalidated);
-    if (RevalidateBlock(block))
-    {
-      SetFastMap(start_pc, block->host_code);
-      return;
-    }
-  }
-
-  block = CreateBlock(start_pc);
-  if (!block)
-    Panic("Failed to create block, TODO fallback to interpreter");
-
-  // TODO: Persist the compiler
-  CPU::NewRec::X64Compiler cc;
-  block->host_code = cc.CompileBlock(block);
-  if (!block->host_code)
-  {
-    // block failed to compile
-    block->host_code = &CPU::CodeCache::InterpretUncachedBlock<PGXPMode::Disabled>;
-  }
-
-  SetFastMap(start_pc, block->host_code);
-}
-
 void CPU::NewRec::X64Compiler::CompileASMFunctions()
 {
   CodeGenerator acg(g_code_buffer.GetFreeCodeSpace(), g_code_buffer.GetFreeCodePointer());
@@ -1800,7 +1772,7 @@ void CPU::NewRec::X64Compiler::CompileASMFunctions()
   g_compile_block = cg->getCurr();
   {
     cg->mov(RWARG1, cg->dword[PTR(&g_state.regs.pc)]);
-    cg->call(&X64Compiler::CompileThunk);
+    cg->call(&CompileOrRevalidateBlock);
     cg->jmp(dispatch);
   }
 

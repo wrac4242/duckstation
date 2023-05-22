@@ -44,6 +44,7 @@ static constexpr bool BlockInRAM(VirtualMemoryAddress pc)
 Block* LookupBlock(u32 pc);
 Block* CreateBlock(u32 pc);
 bool RevalidateBlock(Block* block);
+void CompileOrRevalidateBlock(u32 start_pc);
 
 void CompileASMFunctions();
 

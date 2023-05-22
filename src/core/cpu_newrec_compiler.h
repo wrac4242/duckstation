@@ -44,7 +44,8 @@ protected:
     FLUSH_FOR_C_CALL = (FLUSH_FREE_CALLER_SAVED_REGISTERS),
     FLUSH_FOR_LOADSTORE = (FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_CYCLES | FLUSH_GTE_DONE_CYCLE),
     FLUSH_FOR_BRANCH = (FLUSH_FLUSH_MIPS_REGISTERS),
-    FLUSH_FOR_INTERRUPT = (FLUSH_CYCLES | FLUSH_GTE_DONE_CYCLE), // GTE cycles needed because it stalls when a GTE instruction is next.
+    FLUSH_FOR_INTERRUPT =
+      (FLUSH_CYCLES | FLUSH_GTE_DONE_CYCLE), // GTE cycles needed because it stalls when a GTE instruction is next.
     FLUSH_FOR_INTERPRETER =
       (FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_INVALIDATE_MIPS_REGISTERS | FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_PC |
        FLUSH_CYCLES | FLUSH_INSTRUCTION_BITS | FLUSH_LOAD_DELAY | FLUSH_GTE_DONE_CYCLE),
@@ -405,4 +406,6 @@ protected:
   std::array<HostStateBackup, 2> m_host_state_backup = {};
   u32 m_host_state_backup_count = 0;
 };
+
+extern Compiler* g_compiler;
 } // namespace CPU::NewRec

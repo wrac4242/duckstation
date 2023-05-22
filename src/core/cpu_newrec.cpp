@@ -3,6 +3,7 @@
 #include "common/align.h"
 #include "common/assert.h"
 #include "common/log.h"
+#include "cpu_code_cache.h"
 #include "cpu_core_private.h"
 #include "cpu_newrec_compiler.h"
 #include "cpu_newrec_private.h"
@@ -306,6 +307,34 @@ bool CPU::NewRec::RevalidateBlock(Block* block)
   AddBlockToPageList(block);
   return true;
 }
+void CPU::NewRec::CompileOrRevalidateBlock(u32 start_pc)
+{
+  Block* block = LookupBlock(start_pc);
+  if (block)
+  {
+    // we should only be here if the block got invalidated
+    DebugAssert(block->invalidated);
+    if (RevalidateBlock(block))
+    {
+      SetFastMap(start_pc, block->host_code);
+      return;
+    }
+  }
+
+  block = CreateBlock(start_pc);
+  if (!block)
+    Panic("Failed to create block, TODO fallback to interpreter");
+
+  // TODO: Persist the compiler
+  block->host_code = g_compiler->CompileBlock(block);
+  if (!block->host_code)
+  {
+    // block failed to compile
+    block->host_code = &CPU::CodeCache::InterpretUncachedBlock<PGXPMode::Disabled>;
+  }
+
+  SetFastMap(start_pc, block->host_code);
+}
 
 void CPU::NewRec::AddBlockToPageList(Block* block)
 {
@@ -402,7 +431,7 @@ void CPU::NewRec::ClearBlocks()
   for (Block* block : s_blocks)
     std::free(block);
   s_blocks.clear();
-  
+
   std::memset(s_lut_block_pointers.get(), 0, sizeof(Block*) * GetLUTSlotCount(false));
   ResetLUTs();
 }
