@@ -255,7 +255,10 @@ struct Settings
   bool log_to_file = false;
 
   ALWAYS_INLINE bool IsUsingCodeCache() const { return (cpu_execution_mode != CPUExecutionMode::Interpreter); }
-  ALWAYS_INLINE bool IsUsingRecompiler() const { return (cpu_execution_mode == CPUExecutionMode::Recompiler); }
+  ALWAYS_INLINE bool IsUsingRecompiler() const
+  {
+    return (cpu_execution_mode == CPUExecutionMode::Recompiler || cpu_execution_mode == CPUExecutionMode::NewRec);
+  }
   ALWAYS_INLINE bool IsUsingSoftwareRenderer() const { return (gpu_renderer == GPURenderer::Software); }
   ALWAYS_INLINE bool IsRunaheadEnabled() const { return (runahead_frames > 0); }
 
@@ -277,8 +280,7 @@ struct Settings
 
   ALWAYS_INLINE bool IsUsingFastmem() const
   {
-    return (cpu_fastmem_mode != CPUFastmemMode::Disabled && cpu_execution_mode == CPUExecutionMode::Recompiler &&
-            !cpu_recompiler_memory_exceptions);
+    return (cpu_fastmem_mode != CPUFastmemMode::Disabled && IsUsingRecompiler() && !cpu_recompiler_memory_exceptions);
   }
 
   ALWAYS_INLINE s32 GetAudioOutputVolume(bool fast_forwarding) const
