@@ -262,14 +262,193 @@ CPU::Reg CPU::NewRec::Compiler::MipsD() const
   return inst->r.rd;
 }
 
-u32 CPU::NewRec::Compiler::GetConditionalBranchTarget() const
+u32 CPU::NewRec::Compiler::GetConditionalBranchTarget(CompileFlags cf) const
 {
-  return m_compiler_pc + (inst->i.imm_sext32() << 2);
+  // compiler pc has already been advanced when swapping branch delay slots
+  const u32 current_pc = m_compiler_pc - (cf.delay_slot_swapped ? sizeof(Instruction) : 0);
+  return current_pc + (inst->i.imm_sext32() << 2);
 }
 
-u32 CPU::NewRec::Compiler::GetBranchReturnAddress() const
+u32 CPU::NewRec::Compiler::GetBranchReturnAddress(CompileFlags cf) const
 {
-  return m_compiler_pc + sizeof(Instruction);
+  // compiler pc has already been advanced when swapping branch delay slots
+  return m_compiler_pc + (cf.delay_slot_swapped ? 0 : sizeof(Instruction));
+}
+
+bool CPU::NewRec::Compiler::TrySwapDelaySlot(Reg rs, Reg rt, Reg rd)
+{
+  if constexpr (!SWAP_BRANCH_DELAY_SLOTS)
+    return false;
+
+  const Instruction* next_instruction = inst + 1;
+  DebugAssert(next_instruction < (m_block->Instructions() + m_block->size));
+
+  const Reg opcode_rs = next_instruction->r.rs;
+  const Reg opcode_rt = next_instruction->r.rt;
+  const Reg opcode_rd = next_instruction->r.rd;
+
+#ifdef _DEBUG
+  TinyString disasm;
+  DisassembleInstruction(&disasm, m_current_instruction_pc + 4, next_instruction->bits);
+#endif
+
+  // Just in case we read it in the instruction.. but the block should end after this.
+  const Instruction* const backup_instruction = inst;
+  const u32 backup_instruction_pc = m_current_instruction_pc;
+  const bool backup_instruction_delay_slot = m_current_instruction_branch_delay_slot;
+
+  if (next_instruction->bits == 0)
+  {
+    // nop
+    goto is_safe;
+  }
+
+  // can't swap when the branch is the first instruction because of bloody load delays
+  if (m_block->pc == m_current_instruction_pc || m_load_delay_dirty ||
+      (HasLoadDelay() && (m_load_delay_register == rs || m_load_delay_register == rt || m_load_delay_register == rd)))
+  {
+    goto is_unsafe;
+  }
+
+  switch (next_instruction->op)
+  {
+    case InstructionOp::addi:
+    case InstructionOp::addiu:
+    case InstructionOp::slti:
+    case InstructionOp::sltiu:
+    case InstructionOp::andi:
+    case InstructionOp::ori:
+    case InstructionOp::xori:
+    case InstructionOp::lui:
+    case InstructionOp::lb:
+    case InstructionOp::lh:
+    case InstructionOp::lwl:
+    case InstructionOp::lw:
+    case InstructionOp::lbu:
+    case InstructionOp::lhu:
+    case InstructionOp::lwr:
+    case InstructionOp::sb:
+    case InstructionOp::sh:
+    case InstructionOp::swl:
+    case InstructionOp::sw:
+    case InstructionOp::swr:
+    {
+      if ((rs != Reg::zero && rs == opcode_rt) || (rt != Reg::zero && rt == opcode_rt) ||
+          (rd != Reg::zero && (rd == opcode_rs || rd == opcode_rt)) ||
+          (HasLoadDelay() && (m_load_delay_register == opcode_rs || m_load_delay_register == opcode_rt)))
+      {
+        goto is_unsafe;
+      }
+    }
+    break;
+
+    case InstructionOp::lwc2: // LWC2
+    case InstructionOp::swc2: // SWC2
+      break;
+
+    case InstructionOp::funct: // SPECIAL
+    {
+      switch (next_instruction->r.funct)
+      {
+        case InstructionFunct::sll:
+        case InstructionFunct::srl:
+        case InstructionFunct::sra:
+        case InstructionFunct::sllv:
+        case InstructionFunct::srlv:
+        case InstructionFunct::srav:
+        case InstructionFunct::add:
+        case InstructionFunct::addu:
+        case InstructionFunct::sub:
+        case InstructionFunct::subu:
+        case InstructionFunct::and_:
+        case InstructionFunct::or_:
+        case InstructionFunct::xor_:
+        case InstructionFunct::nor:
+        case InstructionFunct::slt:
+        case InstructionFunct::sltu:
+        {
+          if ((rs != Reg::zero && rs == opcode_rd) || (rt != Reg::zero && rt == opcode_rd) ||
+              (rd != Reg::zero && (rd == opcode_rs || rd == opcode_rt)) ||
+              (HasLoadDelay() && (m_load_delay_register == opcode_rs || m_load_delay_register == opcode_rt ||
+                                  m_load_delay_register == opcode_rd)))
+          {
+            goto is_unsafe;
+          }
+        }
+        break;
+
+        case InstructionFunct::mult:
+        case InstructionFunct::multu:
+        case InstructionFunct::div:
+        case InstructionFunct::divu:
+        {
+          if (HasLoadDelay() && (m_load_delay_register == opcode_rs || m_load_delay_register == opcode_rt))
+            goto is_unsafe;
+        }
+        break;
+
+        default:
+          goto is_unsafe;
+      }
+    }
+    break;
+
+    case InstructionOp::cop0: // COP0
+    case InstructionOp::cop1: // COP1
+    case InstructionOp::cop2: // COP2
+    case InstructionOp::cop3: // COP3
+    {
+      if (next_instruction->cop.IsCommonInstruction())
+      {
+        switch (next_instruction->cop.CommonOp())
+        {
+          case CopCommonInstruction::mfcn: // MFC0
+          case CopCommonInstruction::cfcn: // CFC0
+          {
+            if ((rs != Reg::zero && rs == opcode_rt) || (rt != Reg::zero && rt == opcode_rt) ||
+                (rd != Reg::zero && rd == opcode_rt) || (HasLoadDelay() && m_load_delay_register == opcode_rt))
+            {
+              goto is_unsafe;
+            }
+          }
+          break;
+
+          case CopCommonInstruction::mtcn: // MTC0
+          case CopCommonInstruction::ctcn: // CTC0
+            break;
+        }
+      }
+      else
+      {
+        // swap when it's GTE
+        if (next_instruction->op != InstructionOp::cop2)
+          goto is_unsafe;
+      }
+    }
+    break;
+
+    default:
+      goto is_unsafe;
+  }
+
+is_safe:
+#ifdef _DEBUG
+  Log_WarningPrintf("Swapping delay slot %08X %s", m_current_instruction_pc + 4, disasm.GetCharArray());
+#endif
+
+  CompileBranchDelaySlot();
+
+  inst = backup_instruction;
+  m_current_instruction_pc = backup_instruction_pc;
+  m_current_instruction_branch_delay_slot = backup_instruction_delay_slot;
+  return true;
+
+is_unsafe:
+#ifdef _DEBUG
+  Log_WarningPrintf("NOT swapping delay slot %08X %s", m_current_instruction_pc + 4, disasm.GetCharArray());
+#endif
+
+  return false;
 }
 
 void CPU::NewRec::Compiler::SetCompilerPC(u32 newpc)
@@ -830,11 +1009,11 @@ void CPU::NewRec::Compiler::CompileInstruction()
     case InstructionOp::j: Compile_j(); break;
     case InstructionOp::jal: Compile_jal(); break;
 
-    case InstructionOp::b: CompileTemplate(&Compiler::Compile_b_const, &Compiler::Compile_b, TF_READS_S); break;
-    case InstructionOp::blez: CompileTemplate(&Compiler::Compile_blez_const, &Compiler::Compile_blez, TF_READS_S); break;
-    case InstructionOp::bgtz: CompileTemplate(&Compiler::Compile_bgtz_const, &Compiler::Compile_bgtz, TF_READS_S); break;
-    case InstructionOp::beq: CompileTemplate(&Compiler::Compile_beq_const, &Compiler::Compile_beq, TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
-    case InstructionOp::bne: CompileTemplate(&Compiler::Compile_bne_const, &Compiler::Compile_bne, TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
+    case InstructionOp::b: CompileTemplate(&Compiler::Compile_b_const, &Compiler::Compile_b, TF_READS_S | TF_CAN_SWAP_DELAY_SLOT); break;
+    case InstructionOp::blez: CompileTemplate(&Compiler::Compile_blez_const, &Compiler::Compile_blez, TF_READS_S | TF_CAN_SWAP_DELAY_SLOT); break;
+    case InstructionOp::bgtz: CompileTemplate(&Compiler::Compile_bgtz_const, &Compiler::Compile_bgtz, TF_READS_S | TF_CAN_SWAP_DELAY_SLOT); break;
+    case InstructionOp::beq: CompileTemplate(&Compiler::Compile_beq_const, &Compiler::Compile_beq, TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_SWAP_DELAY_SLOT); break;
+    case InstructionOp::bne: CompileTemplate(&Compiler::Compile_bne_const, &Compiler::Compile_bne, TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_SWAP_DELAY_SLOT); break;
 
     case InstructionOp::addi: CompileTemplate(&Compiler::Compile_addi_const, &Compiler::Compile_addi, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_CAN_OVERFLOW); break;
     case InstructionOp::addiu: CompileTemplate(&Compiler::Compile_addiu_const, &Compiler::Compile_addiu, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE); break;
@@ -1023,6 +1202,9 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
     return;
   }
 
+  if (tflags & TF_CAN_SWAP_DELAY_SLOT && TrySwapDelaySlot(cf.MipsS(), cf.MipsT()))
+    cf.delay_slot_swapped = true;
+
   if (tflags & TF_READS_S &&
       (tflags & TF_NEEDS_REG_S || !cf.const_s || (tflags & TF_WRITES_D && rd != Reg::zero && rd == rs)))
   {
@@ -1186,7 +1368,7 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(void (Compiler::*func)(Comp
       }
     }
   }
-  
+
   (this->*func)(cf, size, sign, addr);
 }
 
@@ -1235,7 +1417,7 @@ void CPU::NewRec::Compiler::Compile_jr_const(CompileFlags cf)
 void CPU::NewRec::Compiler::Compile_jal()
 {
   const u32 newpc = (m_compiler_pc & UINT32_C(0xF0000000)) | (inst->j.target << 2);
-  SetConstantReg(Reg::ra, GetBranchReturnAddress());
+  SetConstantReg(Reg::ra, GetBranchReturnAddress({}));
   CompileBranchDelaySlot();
   EndBlock(newpc);
 }
@@ -1245,7 +1427,7 @@ void CPU::NewRec::Compiler::Compile_jalr_const(CompileFlags cf)
   DebugAssert(HasConstantReg(cf.MipsS()));
   const u32 newpc = GetConstantRegU32(cf.MipsS());
   if (MipsD() != Reg::zero)
-    SetConstantReg(MipsD(), GetBranchReturnAddress());
+    SetConstantReg(MipsD(), GetBranchReturnAddress({}));
 
   CompileBranchDelaySlot();
   EndBlock(newpc);
@@ -1271,10 +1453,10 @@ void CPU::NewRec::Compiler::Compile_b_const(CompileFlags cf)
 
   const s32 rs = GetConstantRegS32(cf.MipsS());
   const bool taken = bgez ? (rs >= 0) : (rs < 0);
-  const u32 taken_pc = GetConditionalBranchTarget();
+  const u32 taken_pc = GetConditionalBranchTarget(cf);
 
   if (link)
-    SetConstantReg(Reg::ra, GetBranchReturnAddress());
+    SetConstantReg(Reg::ra, GetBranchReturnAddress(cf));
 
   CompileBranchDelaySlot();
   EndBlock(taken ? taken_pc : m_compiler_pc);
@@ -1287,7 +1469,7 @@ void CPU::NewRec::Compiler::Compile_b(CompileFlags cf)
   const bool link = (irt & u8(0x1E)) == u8(0x10);
 
   if (link)
-    SetConstantReg(Reg::ra, GetBranchReturnAddress());
+    SetConstantReg(Reg::ra, GetBranchReturnAddress(cf));
 
   Compile_bxx(cf, bgez ? BranchCondition::GreaterEqualZero : BranchCondition::LessThanZero);
 }
@@ -1368,7 +1550,7 @@ void CPU::NewRec::Compiler::Compile_bxx_const(CompileFlags cf, BranchCondition c
       return;
   }
 
-  const u32 taken_pc = GetConditionalBranchTarget();
+  const u32 taken_pc = GetConditionalBranchTarget(cf);
   CompileBranchDelaySlot();
   EndBlock(taken ? taken_pc : m_compiler_pc);
 }

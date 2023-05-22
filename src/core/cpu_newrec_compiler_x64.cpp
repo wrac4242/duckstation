@@ -606,21 +606,25 @@ void CPU::NewRec::X64Compiler::Compile_jalr(CompileFlags cf)
   const Reg32 pcreg = cf.valid_host_s ? CFGetRegS(cf) : RWARG1;
 
   if (MipsD() != Reg::zero)
-    SetConstantReg(MipsD(), GetBranchReturnAddress());
+    SetConstantReg(MipsD(), GetBranchReturnAddress(cf));
 
-  cg->mov(cg->dword[PTR(&g_state.regs.pc)], pcreg);
   CheckBranchTarget(pcreg);
+  cg->mov(cg->dword[PTR(&g_state.regs.pc)], pcreg);
+
   CompileBranchDelaySlot(false);
   EndBlock(std::nullopt);
 }
 
 void CPU::NewRec::X64Compiler::Compile_bxx(CompileFlags cf, BranchCondition cond)
 {
-  const u32 taken_pc = GetConditionalBranchTarget();
+  const u32 taken_pc = GetConditionalBranchTarget(cf);
 
   Flush(FLUSH_FOR_BRANCH);
 
   DebugAssert(cf.valid_host_s);
+
+  // MipsT() here should equal zero for zero branches.
+  DebugAssert(cond == BranchCondition::Equal || cond == BranchCondition::NotEqual || cf.MipsT() == Reg::zero);
 
   // TODO: Swap this back to near once instructions don't blow up
   constexpr CodeGenerator::LabelType type = CodeGenerator::T_NEAR;
@@ -673,13 +677,17 @@ void CPU::NewRec::X64Compiler::Compile_bxx(CompileFlags cf, BranchCondition cond
   }
 
   BackupHostState();
-  CompileBranchDelaySlot();
+  if (!cf.delay_slot_swapped)
+    CompileBranchDelaySlot();
+
   EndBlock(m_compiler_pc);
 
   cg->L(taken);
 
   RestoreHostState();
-  CompileBranchDelaySlot();
+  if (!cf.delay_slot_swapped)
+    CompileBranchDelaySlot();
+
   EndBlock(taken_pc);
 }
 

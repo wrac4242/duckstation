@@ -17,6 +17,7 @@ namespace CPU::NewRec {
 static constexpr u32 NUM_HOST_REGS = 16;
 static constexpr bool HAS_MEMORY_OPERANDS = true;
 static constexpr bool EMULATE_LOAD_DELAYS = true;
+static constexpr bool SWAP_BRANCH_DELAY_SLOTS = true;
 
 class Compiler
 {
@@ -67,13 +68,12 @@ protected:
       u32 valid_host_lo : 1; // LO is valid in host register
       u32 valid_host_hi : 1; // HI is valid in host register
 
-      u32 delay_slot_swapped : 1;
-
       u32 host_d : 5;  // D host register
       u32 host_s : 5;  // S host register
       u32 host_t : 5;  // T host register
       u32 host_lo : 5; // LO host register
 
+      u32 delay_slot_swapped : 1;
       u32 pad1 : 2; // 28..31
 
       u32 host_hi : 5; // HI host register
@@ -115,6 +115,7 @@ protected:
     TF_NO_NOP = (1 << 14),
     TF_NEEDS_REG_S = (1 << 15),
     TF_NEEDS_REG_T = (1 << 16),
+    TF_CAN_SWAP_DELAY_SLOT = (1 << 17),
   };
 
   enum HostRegFlags : u8
@@ -175,8 +176,9 @@ protected:
   void FlushConstantRegs(bool invalidate);
 
   Reg MipsD() const;
-  u32 GetConditionalBranchTarget() const;
-  u32 GetBranchReturnAddress() const;
+  u32 GetConditionalBranchTarget(CompileFlags cf) const;
+  u32 GetBranchReturnAddress(CompileFlags cf) const;
+  bool TrySwapDelaySlot(Reg rs = Reg::zero, Reg rt = Reg::zero, Reg rd = Reg::zero);
   void SetCompilerPC(u32 newpc);
 
   virtual void DisassembleAndLog(const void* start, u32 size) = 0;
@@ -358,6 +360,7 @@ protected:
   const Instruction* inst = nullptr;
   u32 m_current_instruction_pc = 0;
   bool m_current_instruction_branch_delay_slot = false;
+  bool m_branch_delay_slot_swapped = false;
 
   bool m_dirty_pc = false;
   bool m_dirty_instruction_bits = false;
