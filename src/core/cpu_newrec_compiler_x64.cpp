@@ -43,7 +43,6 @@ using namespace Xbyak;
 
 // TODO: register renaming, obviously
 // TODO: try using a pointer to state instead of rip-relative.. it might end up faster due to smaller code
-// TODO: why does enabling block linking break the GTE timing test??
 
 namespace CPU::CodeCache {
 void LogCurrentState();
@@ -157,7 +156,7 @@ void CPU::NewRec::X64Compiler::EndBlockWithException(Exception excode)
 {
   // flush regs, but not pc, it's going to get overwritten
   // flush cycles because of the GTE instruction stuff...
-  Flush(FLUSH_END_BLOCK | FLUSH_CYCLES);
+  Flush(FLUSH_END_BLOCK);
 
   // TODO: flush load delay
   // TODO: break for pcdrv
@@ -315,25 +314,42 @@ void CPU::NewRec::X64Compiler::DisassembleAndLog(const void* start, u32 size)
   s_old_print_address = (ZydisFormatterFunc)&ZydisFormatterPrintAddressAbsolute;
   ZydisFormatterSetHook(&disas_formatter, ZYDIS_FORMATTER_FUNC_PRINT_ADDRESS_ABS, (const void**)&s_old_print_address);
 
-  const u8* instPtr = static_cast<const u8*>(start);
-  ZyanUSize instLength = size;
-  while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&disas_decoder, instPtr, instLength, &disas_instruction, disas_operands)))
+  const u8* ptr = static_cast<const u8*>(start);
+  ZyanUSize remaining = size;
+  while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&disas_decoder, ptr, remaining, &disas_instruction, disas_operands)))
   {
     char buffer[256];
-    if (ZYAN_SUCCESS(ZydisFormatterFormatInstruction(
-          &disas_formatter, &disas_instruction, disas_operands, ZYDIS_MAX_OPERAND_COUNT, buffer, sizeof(buffer),
-          static_cast<ZyanU64>(reinterpret_cast<uintptr_t>(instPtr)), nullptr)))
+    if (ZYAN_SUCCESS(ZydisFormatterFormatInstruction(&disas_formatter, &disas_instruction, disas_operands,
+                                                     ZYDIS_MAX_OPERAND_COUNT, buffer, sizeof(buffer),
+                                                     static_cast<ZyanU64>(reinterpret_cast<uintptr_t>(ptr)), nullptr)))
     {
-      Log_DebugPrintf("    %016" PRIX64 "    %s", static_cast<u64>(reinterpret_cast<uintptr_t>(instPtr)), buffer);
+      Log_DebugPrintf("    %016" PRIX64 "    %s", static_cast<u64>(reinterpret_cast<uintptr_t>(ptr)), buffer);
     }
 
-    instPtr += disas_instruction.length;
-    instLength -= disas_instruction.length;
+    ptr += disas_instruction.length;
+    remaining -= disas_instruction.length;
   }
-#if 0
-  const std::string str = StringUtil::EncodeHex(static_cast<const u8*>(start), size);
-  Log_DebugPrint(str.c_str());
-#endif
+}
+
+u32 CPU::NewRec::X64Compiler::GetHostInstructionCount(const void* start, u32 size)
+{
+  ZydisDecoder disas_decoder;
+  ZydisDecodedInstruction disas_instruction;
+  ZydisDecoderContext disas_context;
+  ZydisDecoderInit(&disas_decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+
+  const u8* ptr = static_cast<const u8*>(start);
+  ZyanUSize remaining = size;
+  u32 inst_count = 0;
+  while (
+    ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(&disas_decoder, &disas_context, ptr, remaining, &disas_instruction)))
+  {
+    ptr += disas_instruction.length;
+    remaining -= disas_instruction.length;
+    inst_count++;
+  }
+
+  return inst_count;
 }
 
 void CPU::NewRec::X64Compiler::LoadHostRegWithConstant(u32 reg, u32 val)
@@ -1187,9 +1203,22 @@ void CPU::NewRec::X64Compiler::Compile_slt(CompileFlags cf, bool sign)
   sign ? cg->setl(rd.cvt8()) : cg->setb(rd.cvt8());
 }
 
-void CPU::NewRec::X64Compiler::ComputeLoadStoreAddressArg(Reg32 dst, CompileFlags cf,
-                                                          const std::optional<VirtualMemoryAddress>& address)
+void CPU::NewRec::X64Compiler::FlushForLoadStore(const std::optional<VirtualMemoryAddress>& address, bool store)
 {
+  // TODO: Stores don't need to flush GTE cycles...
+  Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
+}
+
+Xbyak::Reg32
+CPU::NewRec::X64Compiler::ComputeLoadStoreAddressArg(CompileFlags cf,
+                                                     const std::optional<VirtualMemoryAddress>& address,
+                                                     const std::optional<const Xbyak::Reg32>& reg /* = std::nullopt */)
+{
+  const u32 imm = inst->i.imm_sext32();
+  if (cf.valid_host_s && imm == 0 && !reg.has_value())
+    return CFGetRegS(cf);
+
+  const Reg32 dst = reg.has_value() ? reg.value() : RWARG1;
   if (address.has_value())
   {
     cg->mov(dst, address.value());
@@ -1206,130 +1235,184 @@ void CPU::NewRec::X64Compiler::ComputeLoadStoreAddressArg(Reg32 dst, CompileFlag
       cg->mov(dst, MipsPtr(cf.MipsS()));
     }
 
-    if (const u32 imm = inst->i.imm_sext32(); imm != 0)
+    if (imm != 0)
       cg->add(dst, inst->i.imm_sext32());
+  }
+
+  return dst;
+}
+
+template<typename RegAllocFn>
+void CPU::NewRec::X64Compiler::GenerateLoad(const Xbyak::Reg32& addr_reg, MemoryAccessSize size, bool sign,
+                                            const RegAllocFn& dst_reg_alloc)
+{
+  const bool checked = g_settings.cpu_recompiler_memory_exceptions;
+
+  if (addr_reg != RWARG1)
+    cg->mov(RWARG1, addr_reg);
+
+  switch (size)
+  {
+    case MemoryAccessSize::Byte:
+    {
+      cg->call(checked ? static_cast<const void*>(&Recompiler::Thunks::ReadMemoryByte) :
+                         static_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryByte));
+    }
+    break;
+    case MemoryAccessSize::HalfWord:
+    {
+      cg->call(checked ? static_cast<const void*>(&Recompiler::Thunks::ReadMemoryHalfWord) :
+                         static_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryHalfWord));
+    }
+    break;
+    case MemoryAccessSize::Word:
+    {
+      cg->call(checked ? static_cast<const void*>(&Recompiler::Thunks::ReadMemoryWord) :
+                         static_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryWord));
+    }
+    break;
+  }
+
+  // TODO: turn this into an asm function instead
+  if (checked)
+  {
+    cg->test(RXRET, RXRET);
+
+    BackupHostState();
+    SwitchToFarCode(true, &CodeGenerator::js);
+
+    // flush regs, but not pc, it's going to get overwritten
+    // flush cycles because of the GTE instruction stuff...
+    Flush(FLUSH_END_BLOCK);
+
+    // cause_bits = (-result << 2) | BD | cop_n
+    cg->mov(RWARG1, RWRET);
+    cg->neg(RWARG1);
+    cg->shl(RWARG1, 2);
+    cg->or_(RWARG1, Cop0Registers::CAUSE::MakeValueForException(
+                      static_cast<Exception>(0), m_current_instruction_branch_delay_slot, false, inst->cop.cop_n));
+    cg->mov(RWARG2, m_current_instruction_pc);
+    cg->call(static_cast<void (*)(u32, u32)>(&CPU::RaiseException));
+    m_dirty_pc = false;
+    EndAndLinkBlock(std::nullopt);
+
+    SwitchToNearCode(false);
+    RestoreHostState();
+  }
+
+  const Xbyak::Reg32 dst_reg = dst_reg_alloc();
+  switch (size)
+  {
+    case MemoryAccessSize::Byte:
+    {
+      sign ? cg->movsx(dst_reg, RWRET.cvt8()) : cg->movzx(dst_reg, RWRET.cvt8());
+    }
+    break;
+    case MemoryAccessSize::HalfWord:
+    {
+      sign ? cg->movsx(dst_reg, RWRET.cvt16()) : cg->movzx(dst_reg, RWRET.cvt16());
+    }
+    break;
+    case MemoryAccessSize::Word:
+    {
+      if (dst_reg != RWRET)
+        cg->mov(dst_reg, RWRET);
+    }
+    break;
+  }
+}
+
+void CPU::NewRec::X64Compiler::GenerateStore(const Xbyak::Reg32& addr_reg, const Xbyak::Reg32& value_reg,
+                                             MemoryAccessSize size)
+{
+  const bool checked = g_settings.cpu_recompiler_memory_exceptions;
+
+  if (addr_reg != RWARG1)
+    cg->mov(RWARG1, addr_reg);
+  if (value_reg != RWARG2)
+    cg->mov(RWARG2, value_reg);
+
+  switch (size)
+  {
+    case MemoryAccessSize::Byte:
+    {
+      cg->call(checked ? static_cast<const void*>(&Recompiler::Thunks::WriteMemoryByte) :
+                         static_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryByte));
+    }
+    break;
+    case MemoryAccessSize::HalfWord:
+    {
+      cg->call(checked ? static_cast<const void*>(&Recompiler::Thunks::WriteMemoryHalfWord) :
+                         static_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryHalfWord));
+    }
+    break;
+    case MemoryAccessSize::Word:
+    {
+      cg->call(checked ? static_cast<const void*>(&Recompiler::Thunks::WriteMemoryWord) :
+                         static_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryWord));
+    }
+    break;
+  }
+
+  // TODO: turn this into an asm function instead
+  if (checked)
+  {
+    cg->test(RWRET, RWRET);
+
+    BackupHostState();
+    SwitchToFarCode(true, &CodeGenerator::jnz);
+
+    // flush regs, but not pc, it's going to get overwritten
+    // flush cycles because of the GTE instruction stuff...
+    Flush(FLUSH_END_BLOCK);
+
+    // cause_bits = (result << 2) | BD | cop_n
+    cg->mov(RWARG1, RWRET);
+    cg->shl(RWARG1, 2);
+    cg->or_(RWARG1, Cop0Registers::CAUSE::MakeValueForException(
+                      static_cast<Exception>(0), m_current_instruction_branch_delay_slot, false, inst->cop.cop_n));
+    cg->mov(RWARG2, m_current_instruction_pc);
+    cg->call(static_cast<void (*)(u32, u32)>(&CPU::RaiseException));
+    m_dirty_pc = false;
+    EndAndLinkBlock(std::nullopt);
+
+    SwitchToNearCode(false);
+    RestoreHostState();
   }
 }
 
 void CPU::NewRec::X64Compiler::Compile_lxx(CompileFlags cf, MemoryAccessSize size, bool sign,
                                            const std::optional<VirtualMemoryAddress>& address)
 {
-  Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
-  ComputeLoadStoreAddressArg(RWARG1, cf, address);
+  FlushForLoadStore(address, false);
+  const Reg32 addr = ComputeLoadStoreAddressArg(cf, address);
+  GenerateLoad(addr, size, sign, [this, cf]() {
+    if (cf.MipsT() == Reg::zero)
+      return RWRET;
 
-  switch (size)
-  {
-    case MemoryAccessSize::Byte:
-      cg->call(&Recompiler::Thunks::UncheckedReadMemoryByte);
-      break;
-    case MemoryAccessSize::HalfWord:
-      cg->call(&Recompiler::Thunks::UncheckedReadMemoryHalfWord);
-      break;
-    case MemoryAccessSize::Word:
-      cg->call(&Recompiler::Thunks::UncheckedReadMemoryWord);
-      break;
-  }
-
-  // TODO: move this out
-  if (inst->op == InstructionOp::lwc2)
-  {
-    const u32 index = static_cast<u32>(inst->r.rt.GetValue());
-    const auto [ptr, action] = GetGTERegisterPointer(index, true);
-    switch (action)
-    {
-      case GTERegisterAccessAction::Ignore:
-      {
-        return;
-      }
-
-      case GTERegisterAccessAction::Direct:
-      {
-        cg->mov(cg->dword[PTR(ptr)], RWRET);
-        return;
-      }
-
-      case GTERegisterAccessAction::SignExtend16:
-      {
-        cg->movsx(RWRET, RWRET.cvt16());
-        cg->mov(cg->dword[PTR(ptr)], RWRET);
-        return;
-      }
-
-      case GTERegisterAccessAction::ZeroExtend16:
-      {
-        cg->movzx(RWRET, RWRET.cvt16());
-        cg->mov(cg->dword[PTR(ptr)], RWRET);
-        return;
-      }
-
-      case GTERegisterAccessAction::CallHandler:
-      {
-        Flush(FLUSH_FOR_C_CALL);
-        cg->mov(RWARG2, RWRET);
-        cg->mov(RWARG1, index);
-        cg->call(&GTE::WriteRegister);
-        return;
-      }
-
-      case GTERegisterAccessAction::PushFIFO:
-      {
-        // SXY0 <- SXY1
-        // SXY1 <- SXY2
-        // SXY2 <- SXYP
-        DebugAssert(RWRET != RWARG1 && RWRET != RWARG2);
-        cg->mov(RWARG1, cg->dword[PTR(&g_state.gte_regs.SXY1[0])]);
-        cg->mov(RWARG2, cg->dword[PTR(&g_state.gte_regs.SXY2[0])]);
-        cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY0[0])], RWARG1);
-        cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY1[0])], RWARG2);
-        cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY2[0])], RWRET);
-        return;
-      }
-
-      default:
-      {
-        Panic("Unknown action");
-        return;
-      }
-    }
-  }
-
-  if (cf.MipsT() == Reg::zero)
-    return;
-
-  // TODO: option to turn off load delay?
-  const Reg32 rt = Reg32(
-    AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, cf.MipsT()));
-
-  switch (size)
-  {
-    case MemoryAccessSize::Byte:
-      sign ? cg->movsx(rt, RWRET.cvt8()) : cg->movzx(rt, RWRET.cvt8());
-      break;
-    case MemoryAccessSize::HalfWord:
-      sign ? cg->movsx(rt, RWRET.cvt16()) : cg->movzx(rt, RWRET.cvt16());
-      break;
-    case MemoryAccessSize::Word:
-      cg->mov(rt, RWRET);
-      break;
-  }
+    return Reg32(AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG,
+                                 cf.MipsT()));
+  });
 }
 
 void CPU::NewRec::X64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize size, bool sign,
                                            const std::optional<VirtualMemoryAddress>& address)
 {
-  DebugAssert(EMULATE_LOAD_DELAYS);
+  DebugAssert(size == MemoryAccessSize::Word && !sign);
+  FlushForLoadStore(address, false);
 
   // TODO: if address is constant, this can be simplified..
-  // TODO: Share this
-  Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
+
+  // If we're coming from another block, just flush the load delay and hope for the best..
+  if (m_load_delay_dirty)
+    UpdateLoadDelay();
 
   // We'd need to be careful here if we weren't overwriting it..
   const Reg32 addr = Reg32(AllocateHostReg(HR_CALLEE_SAVED, HR_TYPE_TEMP));
-  ComputeLoadStoreAddressArg(addr, cf, address);
+  ComputeLoadStoreAddressArg(cf, address, addr);
   cg->mov(RWARG1, addr);
   cg->and_(RWARG1, ~0x3u);
-
-  cg->call(&Recompiler::Thunks::UncheckedReadMemoryWord);
+  GenerateLoad(RWARG1, MemoryAccessSize::Word, false, [this]() { return RWRET; });
 
   if (inst->r.rt == Reg::zero)
   {
@@ -1337,18 +1420,37 @@ void CPU::NewRec::X64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize siz
     return;
   }
 
-  // TODO: this can take over rt's value if it's no longer needed
-  // NOTE: can't trust T in cf because of the flush
+  // lwl/lwr from a load-delayed value takes the new value, but it itself, is load delayed, so the original value is
+  // never written back. NOTE: can't trust T in cf because of the flush
   const Reg rt = inst->r.rt;
-  const Reg32 value = Reg32(AllocateHostReg(HR_MODE_WRITE, HR_TYPE_NEXT_LOAD_DELAY_VALUE, rt));
-  DebugAssert(value != cg->ecx);
-  if (HasConstantReg(rt))
-    cg->mov(value, GetConstantRegU32(rt));
-  else if (const std::optional<u32> rtreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rt); rtreg.has_value())
-    cg->mov(value, Reg32(rtreg.value()));
+  Reg32 value;
+  if (m_load_delay_register == rt)
+  {
+    const u32 existing_ld_rt = (m_load_delay_value_register == NUM_HOST_REGS) ?
+                                 AllocateHostReg(HR_MODE_READ, HR_TYPE_LOAD_DELAY_VALUE, rt) :
+                                 m_load_delay_value_register;
+    RenameHostReg(existing_ld_rt, HR_MODE_WRITE, HR_TYPE_NEXT_LOAD_DELAY_VALUE, rt);
+    value = Reg32(existing_ld_rt);
+  }
   else
-    cg->mov(value, MipsPtr(rt));
+  {
+    if constexpr (EMULATE_LOAD_DELAYS)
+    {
+      value = Reg32(AllocateHostReg(HR_MODE_WRITE, HR_TYPE_NEXT_LOAD_DELAY_VALUE, rt));
+      if (HasConstantReg(rt))
+        cg->mov(value, GetConstantRegU32(rt));
+      else if (const std::optional<u32> rtreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rt); rtreg.has_value())
+        cg->mov(value, Reg32(rtreg.value()));
+      else
+        cg->mov(value, MipsPtr(rt));
+    }
+    else
+    {
+      value = Reg32(AllocateHostReg(HR_MODE_READ | HR_MODE_WRITE, HR_TYPE_CPU_REG, rt));
+    }
+  }
 
+  DebugAssert(value != cg->ecx);
   cg->mov(cg->ecx, addr);
   cg->and_(cg->ecx, 3);
   cg->shl(cg->ecx, 3); // *8
@@ -1384,78 +1486,98 @@ void CPU::NewRec::X64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize siz
   FreeHostReg(addr.getIdx());
 }
 
+void CPU::NewRec::X64Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSize size, bool sign,
+                                            const std::optional<VirtualMemoryAddress>& address)
+{
+  FlushForLoadStore(address, false);
+  const Reg32 addr = ComputeLoadStoreAddressArg(cf, address);
+  GenerateLoad(addr, MemoryAccessSize::Word, false, [this]() { return RWRET; });
+
+  const u32 index = static_cast<u32>(inst->r.rt.GetValue());
+  const auto [ptr, action] = GetGTERegisterPointer(index, true);
+  switch (action)
+  {
+    case GTERegisterAccessAction::Ignore:
+    {
+      return;
+    }
+
+    case GTERegisterAccessAction::Direct:
+    {
+      cg->mov(cg->dword[PTR(ptr)], RWRET);
+      return;
+    }
+
+    case GTERegisterAccessAction::SignExtend16:
+    {
+      cg->movsx(RWRET, RWRET.cvt16());
+      cg->mov(cg->dword[PTR(ptr)], RWRET);
+      return;
+    }
+
+    case GTERegisterAccessAction::ZeroExtend16:
+    {
+      cg->movzx(RWRET, RWRET.cvt16());
+      cg->mov(cg->dword[PTR(ptr)], RWRET);
+      return;
+    }
+
+    case GTERegisterAccessAction::CallHandler:
+    {
+      Flush(FLUSH_FOR_C_CALL);
+      cg->mov(RWARG2, RWRET);
+      cg->mov(RWARG1, index);
+      cg->call(&GTE::WriteRegister);
+      return;
+    }
+
+    case GTERegisterAccessAction::PushFIFO:
+    {
+      // SXY0 <- SXY1
+      // SXY1 <- SXY2
+      // SXY2 <- SXYP
+      DebugAssert(RWRET != RWARG1 && RWRET != RWARG2);
+      cg->mov(RWARG1, cg->dword[PTR(&g_state.gte_regs.SXY1[0])]);
+      cg->mov(RWARG2, cg->dword[PTR(&g_state.gte_regs.SXY2[0])]);
+      cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY0[0])], RWARG1);
+      cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY1[0])], RWARG2);
+      cg->mov(cg->dword[PTR(&g_state.gte_regs.SXY2[0])], RWRET);
+      return;
+    }
+
+    default:
+    {
+      Panic("Unknown action");
+      return;
+    }
+  }
+}
+
 void CPU::NewRec::X64Compiler::Compile_sxx(CompileFlags cf, MemoryAccessSize size, bool sign,
                                            const std::optional<VirtualMemoryAddress>& address)
 {
-  // TODO: Stores don't need to flush GTE cycles...
-  Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
+  FlushForLoadStore(address, true);
+  const Reg32 addr = ComputeLoadStoreAddressArg(cf, address);
 
-  ComputeLoadStoreAddressArg(RWARG1, cf, address);
-
-  // TODO: move this out
-  if (inst->op == InstructionOp::swc2)
-  {
-    const u32 index = static_cast<u32>(inst->r.rt.GetValue());
-    const auto [ptr, action] = GetGTERegisterPointer(index, false);
-    switch (action)
-    {
-      case GTERegisterAccessAction::Direct:
-      {
-        cg->mov(RWARG2, cg->dword[PTR(ptr)]);
-      }
-      break;
-
-      case GTERegisterAccessAction::CallHandler:
-      {
-        Flush(FLUSH_FOR_C_CALL);
-        cg->mov(RWARG1, index);
-        cg->call(&GTE::ReadRegister);
-        cg->mov(RWRET, RWARG2);
-      }
-      break;
-
-      default:
-      {
-        Panic("Unknown action");
-      }
-      break;
-    }
-  }
-  else
-  {
+  if (!cf.valid_host_t)
     MoveTToReg(RWARG2, cf);
-  }
 
-  switch (size)
-  {
-    case MemoryAccessSize::Byte:
-      cg->call(&Recompiler::Thunks::UncheckedWriteMemoryByte);
-      break;
-    case MemoryAccessSize::HalfWord:
-      cg->call(&Recompiler::Thunks::UncheckedWriteMemoryHalfWord);
-      break;
-    case MemoryAccessSize::Word:
-      cg->call(&Recompiler::Thunks::UncheckedWriteMemoryWord);
-      break;
-  }
+  GenerateStore(addr, cf.valid_host_t ? CFGetRegT(cf) : RWARG2, size);
 }
 
 void CPU::NewRec::X64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize size, bool sign,
                                            const std::optional<VirtualMemoryAddress>& address)
 {
-  DebugAssert(EMULATE_LOAD_DELAYS);
+  DebugAssert(size == MemoryAccessSize::Word && !sign);
+  FlushForLoadStore(address, false);
 
   // TODO: if address is constant, this can be simplified..
-  // TODO: Share this
-  Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
-
   // We'd need to be careful here if we weren't overwriting it..
   const Reg32 addr = Reg32(AllocateHostReg(HR_CALLEE_SAVED, HR_TYPE_TEMP));
-  ComputeLoadStoreAddressArg(addr, cf, address);
+  ComputeLoadStoreAddressArg(cf, address, addr);
   cg->mov(RWARG1, addr);
   cg->and_(RWARG1, ~0x3u);
-
-  cg->call(&Recompiler::Thunks::UncheckedReadMemoryWord);
+  GenerateLoad(RWARG1, MemoryAccessSize::Word, false, [this]() { return RWRET; });
 
   // TODO: this can take over rt's value if it's no longer needed
   // NOTE: can't trust T in cf because of the flush
@@ -1511,7 +1633,42 @@ void CPU::NewRec::X64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize siz
 
   cg->mov(RWARG1, addr);
   cg->and_(RWARG1, ~0x3u);
-  cg->call(&Recompiler::Thunks::UncheckedWriteMemoryWord);
+  GenerateStore(RWARG1, value, MemoryAccessSize::Word);
+}
+
+void CPU::NewRec::X64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSize size, bool sign,
+                                            const std::optional<VirtualMemoryAddress>& address)
+{
+  FlushForLoadStore(address, true);
+
+  const u32 index = static_cast<u32>(inst->r.rt.GetValue());
+  const auto [ptr, action] = GetGTERegisterPointer(index, false);
+  switch (action)
+  {
+    case GTERegisterAccessAction::Direct:
+    {
+      cg->mov(RWRET, cg->dword[PTR(ptr)]);
+    }
+    break;
+
+    case GTERegisterAccessAction::CallHandler:
+    {
+      // should already be flushed.. except in fastmem case
+      Flush(FLUSH_FOR_C_CALL);
+      cg->mov(RWARG1, index);
+      cg->call(&GTE::ReadRegister);
+    }
+    break;
+
+    default:
+    {
+      Panic("Unknown action");
+    }
+    break;
+  }
+
+  const Reg32 addr = ComputeLoadStoreAddressArg(cf, address);
+  GenerateStore(addr, RWRET, size);
 }
 
 void CPU::NewRec::X64Compiler::Compile_mtc0(CompileFlags cf)
@@ -1604,7 +1761,7 @@ void CPU::NewRec::X64Compiler::Compile_rfe(CompileFlags cf)
 void CPU::NewRec::X64Compiler::TestInterrupts(const Xbyak::Reg32& sr)
 {
   // need to test for interrupts, flush everything back, since we're gonna have to do it anyway, and this isn't hot
-  Flush(FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_INTERRUPT);
+  Flush(FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_EXCEPTION);
 
   // if Iec == 0 then goto no_interrupt
   Label no_interrupt;

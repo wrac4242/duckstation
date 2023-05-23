@@ -21,10 +21,13 @@ public:
 
   ALWAYS_INLINE u8* GetCodePointer() const { return m_code_ptr; }
   ALWAYS_INLINE u32 GetTotalSize() const { return m_total_size; }
-  ALWAYS_INLINE float GetUsedPct() const { return static_cast<float>(m_code_used) / static_cast<float>(m_code_size); }
+  ALWAYS_INLINE float GetUsedPct() const
+  {
+    return (static_cast<float>(m_code_used) / static_cast<float>(m_code_size)) * 100.0f;
+  }
   ALWAYS_INLINE float GetFarUsedPct() const
   {
-    return static_cast<float>(m_far_code_used) / static_cast<float>(m_far_code_size);
+    return (static_cast<float>(m_far_code_used) / static_cast<float>(m_far_code_size)) * 100.0f;
   }
   ALWAYS_INLINE u32 GetTotalUsed() const { return m_code_used + m_far_code_used; }
 

@@ -25,6 +25,7 @@ public:
 
 protected:
   void DisassembleAndLog(const void* start, u32 size) override;
+  u32 GetHostInstructionCount(const void* start, u32 size) override;
 
   const void* GetCurrentCodePointer() override;
 
@@ -89,16 +90,24 @@ protected:
   void Compile_slt(CompileFlags cf) override;
   void Compile_sltu(CompileFlags cf) override;
 
-  void ComputeLoadStoreAddressArg(Xbyak::Reg32 dst, CompileFlags cf,
-                                  const std::optional<VirtualMemoryAddress>& address);
+  void FlushForLoadStore(const std::optional<VirtualMemoryAddress>& address, bool store);
+  Xbyak::Reg32 ComputeLoadStoreAddressArg(CompileFlags cf, const std::optional<VirtualMemoryAddress>& address,
+                                          const std::optional<const Xbyak::Reg32>& reg = std::nullopt);
+  template<typename RegAllocFn>
+  void GenerateLoad(const Xbyak::Reg32& addr_reg, MemoryAccessSize size, bool sign, const RegAllocFn& dst_reg_alloc);
+  void GenerateStore(const Xbyak::Reg32& addr_reg, const Xbyak::Reg32& value_reg, MemoryAccessSize size);
   void Compile_lxx(CompileFlags cf, MemoryAccessSize size, bool sign,
                    const std::optional<VirtualMemoryAddress>& address) override;
   void Compile_lwx(CompileFlags cf, MemoryAccessSize size, bool sign,
                    const std::optional<VirtualMemoryAddress>& address) override;
+  void Compile_lwc2(CompileFlags cf, MemoryAccessSize size, bool sign,
+                    const std::optional<VirtualMemoryAddress>& address) override;
   void Compile_sxx(CompileFlags cf, MemoryAccessSize size, bool sign,
                    const std::optional<VirtualMemoryAddress>& address) override;
   void Compile_swx(CompileFlags cf, MemoryAccessSize size, bool sign,
                    const std::optional<VirtualMemoryAddress>& address) override;
+  void Compile_swc2(CompileFlags cf, MemoryAccessSize size, bool sign,
+                    const std::optional<VirtualMemoryAddress>& address) override;
 
   void TestInterrupts(const Xbyak::Reg32& sr);
   void Compile_mtc0(CompileFlags cf) override;

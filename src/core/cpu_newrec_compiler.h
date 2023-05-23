@@ -45,7 +45,7 @@ protected:
     FLUSH_FOR_C_CALL = (FLUSH_FREE_CALLER_SAVED_REGISTERS),
     FLUSH_FOR_LOADSTORE = (FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_CYCLES | FLUSH_GTE_DONE_CYCLE),
     FLUSH_FOR_BRANCH = (FLUSH_FLUSH_MIPS_REGISTERS),
-    FLUSH_FOR_INTERRUPT =
+    FLUSH_FOR_EXCEPTION =
       (FLUSH_CYCLES | FLUSH_GTE_DONE_CYCLE), // GTE cycles needed because it stalls when a GTE instruction is next.
     FLUSH_FOR_INTERPRETER =
       (FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_INVALIDATE_MIPS_REGISTERS | FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_PC |
@@ -109,13 +109,12 @@ protected:
     // TF_FORCEREGS
     // TF_FORCEREGT
     TF_LOAD_DELAY = (1 << 11),
-    TF_FLUSH_LOAD_DELAY = (1 << 12),
-    TF_GTE_STALL = (1 << 13),
+    TF_GTE_STALL = (1 << 12),
 
-    TF_NO_NOP = (1 << 14),
-    TF_NEEDS_REG_S = (1 << 15),
-    TF_NEEDS_REG_T = (1 << 16),
-    TF_CAN_SWAP_DELAY_SLOT = (1 << 17),
+    TF_NO_NOP = (1 << 13),
+    TF_NEEDS_REG_S = (1 << 14),
+    TF_NEEDS_REG_T = (1 << 15),
+    TF_CAN_SWAP_DELAY_SLOT = (1 << 16),
   };
 
   enum HostRegFlags : u8
@@ -182,6 +181,7 @@ protected:
   void SetCompilerPC(u32 newpc);
 
   virtual void DisassembleAndLog(const void* start, u32 size) = 0;
+  virtual u32 GetHostInstructionCount(const void* start, u32 size) = 0;
 
   virtual const void* GetCurrentCodePointer() = 0;
 
@@ -224,6 +224,9 @@ protected:
 
   /// Flushes the load delay, i.e. writes it to the destination register.
   void FinishLoadDelay();
+
+  /// Flushes the load delay, but only if it matches the specified register.
+  void FinishLoadDelayToReg(Reg reg);
 
   void BackupHostState();
   void RestoreHostState();
@@ -322,10 +325,14 @@ protected:
                            const std::optional<VirtualMemoryAddress>& address) = 0;
   virtual void Compile_lwx(CompileFlags cf, MemoryAccessSize size, bool sign,
                            const std::optional<VirtualMemoryAddress>& address) = 0; // lwl/lwr
+  virtual void Compile_lwc2(CompileFlags cf, MemoryAccessSize size, bool sign,
+                            const std::optional<VirtualMemoryAddress>& address) = 0;
   virtual void Compile_sxx(CompileFlags cf, MemoryAccessSize size, bool sign,
                            const std::optional<VirtualMemoryAddress>& address) = 0;
   virtual void Compile_swx(CompileFlags cf, MemoryAccessSize size, bool sign,
                            const std::optional<VirtualMemoryAddress>& address) = 0; // swl/swr
+  virtual void Compile_swc2(CompileFlags cf, MemoryAccessSize size, bool sign,
+                            const std::optional<VirtualMemoryAddress>& address) = 0;
 
   static u32* GetCop0RegPtr(Cop0Reg reg);
   static u32 GetCop0RegWriteMask(Cop0Reg reg);

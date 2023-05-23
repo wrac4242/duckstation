@@ -97,12 +97,19 @@ const void* CPU::NewRec::Compiler::CompileBlock(Block* block)
   buffer.CommitCode(code_size);
   buffer.CommitFarCode(far_code_size);
 
-  Log_ProfilePrintf(
-    "%08X-%08X took %u + %u far host bytes for %u MIPS bytes (%u instructions), blowup: %.2fx, cache: %.2f%%/%.2f%%",
-    block->pc, block->pc + block->size * sizeof(Instruction), code_size, far_code_size,
-    block->size * sizeof(Instruction), block->size,
-    static_cast<float>(code_size) / static_cast<float>(block->size * sizeof(Instruction)), buffer.GetUsedPct(),
-    buffer.GetFarUsedPct());
+#ifdef _DEBUG
+  const u32 host_instructions = GetHostInstructionCount(code, code_size);
+  Log_ProfilePrintf("0x%08X: %u/%ub for %ub (%u inst), blowup: %.2fx, cache: %.2f%%/%.2f%%, ipi: %.2f", block->pc,
+                    code_size, far_code_size, block->size * sizeof(Instruction), block->size,
+                    static_cast<float>(code_size) / static_cast<float>(block->size * sizeof(Instruction)),
+                    buffer.GetUsedPct(), buffer.GetFarUsedPct(),
+                    static_cast<float>(host_instructions) / static_cast<float>(block->size));
+#else
+  Log_ProfilePrintf("0x%08X: %u/%ub for %ub (%u inst), blowup: %.2fx, cache: %.2f%%/%.2f%%", block->pc, code_size,
+                    far_code_size, block->size * sizeof(Instruction), block->size,
+                    static_cast<float>(code_size) / static_cast<float>(block->size * sizeof(Instruction)),
+                    buffer.GetUsedPct(), buffer.GetFarUsedPct());
+#endif
 
   return code;
 }
@@ -242,6 +249,21 @@ void CPU::NewRec::Compiler::FinishLoadDelay()
   m_load_delay_value_register = NUM_HOST_REGS;
 }
 
+void CPU::NewRec::Compiler::FinishLoadDelayToReg(Reg reg)
+{
+  if (m_load_delay_dirty)
+  {
+    // inter-block :(
+    UpdateLoadDelay();
+    return;
+  }
+
+  if (m_load_delay_register != reg)
+    return;
+
+  FinishLoadDelay();
+}
+
 void CPU::NewRec::Compiler::ClearConstantReg(Reg r)
 {
   DebugAssert(r < Reg::count && r != Reg::zero);
@@ -308,7 +330,7 @@ bool CPU::NewRec::Compiler::TrySwapDelaySlot(Reg rs, Reg rt, Reg rd)
   }
 
   // can't swap when the branch is the first instruction because of bloody load delays
-  if (m_block->pc == m_current_instruction_pc || m_load_delay_dirty ||
+  if (EMULATE_LOAD_DELAYS && m_block->pc == m_current_instruction_pc || m_load_delay_dirty ||
       (HasLoadDelay() && (m_load_delay_register == rs || m_load_delay_register == rt || m_load_delay_register == rd)))
   {
     goto is_unsafe;
@@ -764,7 +786,7 @@ void CPU::NewRec::Compiler::MarkRegsNeeded(HostRegAllocType type, Reg reg)
 void CPU::NewRec::Compiler::RenameHostReg(u32 reg, u32 new_flags, HostRegAllocType new_type, Reg new_reg)
 {
   // only supported for cpu regs for now
-  DebugAssert(new_type == HR_TYPE_TEMP || new_type == HR_TYPE_CPU_REG);
+  DebugAssert(new_type == HR_TYPE_TEMP || new_type == HR_TYPE_CPU_REG || new_type == HR_TYPE_NEXT_LOAD_DELAY_VALUE);
 
   const std::optional<u32> old_reg = CheckHostReg(0, new_type, new_reg);
   if (old_reg.has_value())
@@ -774,13 +796,24 @@ void CPU::NewRec::Compiler::RenameHostReg(u32 reg, u32 new_flags, HostRegAllocTy
   }
 
   // kill any load delay to this reg
-  if (new_type == HR_TYPE_CPU_REG)
+  if (new_type == HR_TYPE_CPU_REG || new_type == HR_TYPE_NEXT_LOAD_DELAY_VALUE)
     CancelLoadDelaysToReg(new_reg);
 
   if (new_type == HR_TYPE_CPU_REG)
+  {
     Log_DebugPrintf("Renaming host reg %s to guest reg %s", GetHostRegName(reg), GetRegName(new_reg));
+  }
+  else if (new_type == HR_TYPE_NEXT_LOAD_DELAY_VALUE)
+  {
+    Log_DebugPrintf("Renaming host reg %s to load delayed guest reg %s", GetHostRegName(reg), GetRegName(new_reg));
+    DebugAssert(m_next_load_delay_register == Reg::count && m_next_load_delay_value_register == NUM_HOST_REGS);
+    m_next_load_delay_register = new_reg;
+    m_next_load_delay_value_register = reg;
+  }
   else
-    Log_DebugPrintf("Renaming host reg %s");
+  {
+    Log_DebugPrintf("Renaming host reg %s to temp");
+  }
 
   HostRegAlloc& ra = m_host_regs[reg];
   ra.flags = (ra.flags & IMMUTABLE_HR_FLAGS) | HR_NEEDED | HR_ALLOCATED | (new_flags & ALLOWED_HR_FLAGS);
@@ -1033,13 +1066,13 @@ void CPU::NewRec::Compiler::CompileInstruction()
     case InstructionOp::lh: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::HalfWord, false, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
     case InstructionOp::lhu: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::HalfWord, false, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
     case InstructionOp::lw: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::Word, false, false, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
-    case InstructionOp::lwl: CompileLoadStoreTemplate(&Compiler::Compile_lwx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY | TF_FLUSH_LOAD_DELAY); break;
-    case InstructionOp::lwr: CompileLoadStoreTemplate(&Compiler::Compile_lwx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY | TF_FLUSH_LOAD_DELAY); break;
+    case InstructionOp::lwl: CompileLoadStoreTemplate(&Compiler::Compile_lwx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY); break;
+    case InstructionOp::lwr: CompileLoadStoreTemplate(&Compiler::Compile_lwx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY); break;
     case InstructionOp::sb: CompileLoadStoreTemplate(&Compiler::Compile_sxx, MemoryAccessSize::Byte, true, false, TF_READS_S | TF_READS_T); break;
     case InstructionOp::sh: CompileLoadStoreTemplate(&Compiler::Compile_sxx, MemoryAccessSize::HalfWord, true, false, TF_READS_S | TF_READS_T); break;
     case InstructionOp::sw: CompileLoadStoreTemplate(&Compiler::Compile_sxx, MemoryAccessSize::Word, true, false, TF_READS_S | TF_READS_T); break;
-    case InstructionOp::swl: CompileLoadStoreTemplate(&Compiler::Compile_swx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY | TF_FLUSH_LOAD_DELAY); break;
-    case InstructionOp::swr: CompileLoadStoreTemplate(&Compiler::Compile_swx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY | TF_FLUSH_LOAD_DELAY); break;
+    case InstructionOp::swl: CompileLoadStoreTemplate(&Compiler::Compile_swx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY); break;
+    case InstructionOp::swr: CompileLoadStoreTemplate(&Compiler::Compile_swx, MemoryAccessSize::Word, false, false, TF_READS_S | /*TF_READS_T | TF_WRITES_T | */TF_LOAD_DELAY); break;
 
     case InstructionOp::cop0:
       {
@@ -1084,8 +1117,8 @@ void CPU::NewRec::Compiler::CompileInstruction()
       }
       break;
 
-    case InstructionOp::lwc2: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::Word, false, false, TF_GTE_STALL | TF_READS_S | TF_LOAD_DELAY); break;
-    case InstructionOp::swc2: CompileLoadStoreTemplate(&Compiler::Compile_sxx, MemoryAccessSize::Word, true, false, TF_GTE_STALL | TF_READS_S); break;
+    case InstructionOp::lwc2: CompileLoadStoreTemplate(&Compiler::Compile_lwc2, MemoryAccessSize::Word, false, false, TF_GTE_STALL | TF_READS_S | TF_LOAD_DELAY); break;
+    case InstructionOp::swc2: CompileLoadStoreTemplate(&Compiler::Compile_swc2, MemoryAccessSize::Word, true, false, TF_GTE_STALL | TF_READS_S); break;
 
     default: Panic("Fixme"); break;
       // clang-format on
@@ -1137,8 +1170,6 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
 
   if (tflags & TF_GTE_STALL)
     StallUntilGTEComplete();
-  if (tflags & TF_FLUSH_LOAD_DELAY)
-    UpdateLoadDelay();
 
   // throw away instructions writing to $zero
   if (!(tflags & TF_NO_NOP) && (!g_settings.cpu_recompiler_memory_exceptions || !(tflags & TF_CAN_OVERFLOW)) &&
@@ -1306,9 +1337,6 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(void (Compiler::*func)(Comp
 
   if (tflags & TF_GTE_STALL)
     StallUntilGTEComplete();
-
-  if (tflags & TF_FLUSH_LOAD_DELAY)
-    UpdateLoadDelay();
 
   CompileFlags cf = {};
 
