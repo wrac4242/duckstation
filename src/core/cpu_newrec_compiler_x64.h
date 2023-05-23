@@ -21,8 +21,6 @@ public:
   X64Compiler();
   ~X64Compiler() override;
 
-  static u32 CompileASMFunctions(u8* code, u32 code_size);
-
 protected:
   void DisassembleAndLog(const void* start, u32 size) override;
   u32 GetHostInstructionCount(const void* start, u32 size) override;
@@ -118,7 +116,6 @@ protected:
   void Compile_cop2(CompileFlags cf) override;
 
 private:
-  static bool IsCallerSavedRegister(u32 id);
   void SwitchToFarCode(bool emit_jump, void (Xbyak::CodeGenerator::*jump_op)(const void*) = nullptr);
   void SwitchToNearCode(bool emit_jump, void (Xbyak::CodeGenerator::*jump_op)(const void*) = nullptr);
 

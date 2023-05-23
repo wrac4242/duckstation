@@ -44,6 +44,23 @@ struct Block
 
 using BlockLUTArray = std::array<Block**, LUT_TABLE_COUNT>;
 
+struct LoadstoreBackpatchInfo
+{
+  u32 guest_pc;
+  u32 gpr_bitmask;
+  u16 cycles;
+  u16 address_register : 5;
+  u16 data_register : 5;
+  u16 size : 2;
+  u16 is_signed : 1;
+  u16 is_load : 1;
+  u16 code_size;
+
+  MemoryAccessSize AccessSize() const { return static_cast<MemoryAccessSize>(size); }
+  u32 AccessSizeInBytes() const { return 1u << size; }
+};
+static_assert(sizeof(LoadstoreBackpatchInfo) == 16);
+
 static constexpr bool BlockInRAM(VirtualMemoryAddress pc)
 {
   return VirtualAddressToPhysical(pc) < Bus::g_ram_size;
@@ -59,6 +76,13 @@ u32 CompileASMFunctions(u8* code, u32 code_size);
 u32 EmitJump(void* code, const void* dst);
 
 void SetFastMap(u32 pc, const void* function);
+
+void AddLoadStoreInfo(void* code_address, u32 code_size, u32 guest_pc, TickCount cycles, u32 gpr_bitmask,
+                      u8 address_register, u8 data_register, MemoryAccessSize size, bool is_signed, bool is_load);
+bool BackpatchLoadStore(void* code_address, u32 guest_address);
+u32 BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* code_address, u32 code_size, TickCount cycles_to_add,
+                       TickCount cycles_to_remove, u32 gpr_bitmask, u8 address_register, u8 data_register,
+                       MemoryAccessSize size, bool is_signed, bool is_load);
 
 extern CodeLUTArray g_fast_map;
 

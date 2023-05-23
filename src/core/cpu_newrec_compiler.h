@@ -231,6 +231,10 @@ protected:
   void BackupHostState();
   void RestoreHostState();
 
+  /// Registers loadstore for possible backpatching.
+  void AddLoadStoreInfo(void* code_address, u32 code_size, u32 address_register, u32 data_register,
+                        MemoryAccessSize size, bool is_signed, bool is_load);
+
   void CompileInstruction();
   void CompileBranchDelaySlot(bool dirty_pc = true);
 

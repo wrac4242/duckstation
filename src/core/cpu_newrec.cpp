@@ -10,6 +10,7 @@
 #include "cpu_types.h"
 #include "settings.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 Log_SetChannel(CPU::NewRec);
 
@@ -25,6 +26,7 @@ static void InvalidCodeFunction();
 
 static void AllocateLUTs();
 static void ResetLUTs();
+static void ClearBlocks();
 static void CompileASMFunctions();
 
 static u32 ReadBlockInstructions(u32 start_pc);
@@ -45,6 +47,10 @@ static bool s_lut_initialized = false;
 
 // for compiling
 static std::vector<Instruction> s_block_instructions;
+
+// fastmem stuff
+static std::unordered_map<const void*, LoadstoreBackpatchInfo> s_fastmem_backpatch_info;
+static std::unordered_set<u32> s_fastmem_faulting_pcs;
 
 const void* g_enter_recompiler;
 const void* g_exit_recompiler;
@@ -315,6 +321,8 @@ bool CPU::NewRec::RevalidateBlock(Block* block)
 
 void CPU::NewRec::CompileOrRevalidateBlock(u32 start_pc)
 {
+  // TODO: this doesn't currently handle when the cache overflows...
+
   Block* block = LookupBlock(start_pc);
   if (block)
   {
@@ -430,15 +438,15 @@ bool CPU::NewRec::Initialize()
     AllocateLUTs();
   }
 
-  ResetLUTs();
   CompileASMFunctions();
+  ResetLUTs();
 
   return true;
 }
 
 void CPU::NewRec::Shutdown()
 {
-  //
+  ClearBlocks();
 }
 
 void CPU::NewRec::Execute()
@@ -469,7 +477,7 @@ void CPU::NewRec::InvalidateBlocksWithPageNumber(u32 index)
   Bus::ClearRAMCodePage(index);
 }
 
-void CPU::NewRec::Reset()
+void CPU::NewRec::ClearBlocks()
 {
   for (u32 i = 0; i < Bus::RAM_8MB_CODE_PAGE_COUNT; i++)
   {
@@ -480,12 +488,69 @@ void CPU::NewRec::Reset()
     Bus::ClearRAMCodePage(i);
   }
 
+  s_fastmem_backpatch_info.clear();
+  s_fastmem_faulting_pcs.clear();
   s_block_links.clear();
   for (Block* block : s_blocks)
     std::free(block);
   s_blocks.clear();
 
   std::memset(s_lut_block_pointers.get(), 0, sizeof(Block*) * GetLUTSlotCount(false));
-  ResetLUTs();
+}
+
+void CPU::NewRec::Reset()
+{
+  ClearBlocks();
   CompileASMFunctions();
+  ResetLUTs();
+}
+
+void CPU::NewRec::AddLoadStoreInfo(void* code_address, u32 code_size, u32 guest_pc, TickCount cycles, u32 gpr_bitmask,
+                                   u8 address_register, u8 data_register, MemoryAccessSize size, bool is_signed,
+                                   bool is_load)
+{
+  DebugAssert(code_size < std::numeric_limits<u8>::max());
+  DebugAssert(cycles >= 0 && cycles < std::numeric_limits<u16>::max());
+
+  auto iter = s_fastmem_backpatch_info.find(code_address);
+  if (iter != s_fastmem_backpatch_info.end())
+    s_fastmem_backpatch_info.erase(iter);
+
+  const LoadstoreBackpatchInfo info{guest_pc,         gpr_bitmask,   static_cast<u16>(cycles),
+                                    address_register, data_register, static_cast<u16>(size),
+                                    is_signed,        is_load,       static_cast<u8>(code_size)};
+  s_fastmem_backpatch_info.emplace(code_address, info);
+}
+
+bool CPU::NewRec::BackpatchLoadStore(void* code_address, u32 guest_address)
+{
+  auto iter = s_fastmem_backpatch_info.find(code_address);
+  if (iter == s_fastmem_backpatch_info.end())
+    return false;
+
+  const LoadstoreBackpatchInfo& info = iter->second;
+  Log_DevPrintf("Backpatching %s at %p[%u] (pc %08X addr %08X): Bitmask %08X Addr %u Data %u Size %u Signed %02X",
+                info.is_load ? "load" : "store", code_address, info.code_size, info.guest_pc, guest_address,
+                info.gpr_bitmask, info.address_register, info.data_register, info.AccessSizeInBytes(), info.is_signed);
+
+  // remove the cycles we added for the memory read, then take them off again after the backpatch
+  // the normal rec path will add the ram read ticks later, so we need to take them off at the end
+  DebugAssert(!info.is_load || info.cycles >= Bus::RAM_READ_TICKS);
+  const TickCount cycles_to_add =
+    static_cast<TickCount>(static_cast<u32>(info.cycles)) - (info.is_load ? Bus::RAM_READ_TICKS : 0);
+  const TickCount cycles_to_remove = static_cast<TickCount>(static_cast<u32>(info.cycles));
+
+  JitCodeBuffer& buffer = CodeCache::GetCodeBuffer();
+  const u32 thunk_size =
+    BackpatchLoadStore(buffer.GetFreeFarCodePointer(), buffer.GetFreeFarCodeSpace(), code_address, info.code_size,
+                       cycles_to_add, cycles_to_remove, info.gpr_bitmask, info.address_register, info.data_register,
+                       info.AccessSize(), info.is_signed, info.is_load);
+  buffer.CommitFarCode(thunk_size);
+
+  // TODO: queue block for recompilation later
+
+  // and store the pc in the faulting list, so that we don't emit another fastmem loadstore
+  s_fastmem_faulting_pcs.insert(info.guest_pc);
+  s_fastmem_backpatch_info.erase(iter);
+  return true;
 }

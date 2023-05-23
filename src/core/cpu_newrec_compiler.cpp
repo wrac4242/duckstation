@@ -982,6 +982,25 @@ void CPU::NewRec::Compiler::RestoreHostState()
   m_cycles = bu.cycles;
 }
 
+void CPU::NewRec::Compiler::AddLoadStoreInfo(void* code_address, u32 code_size, u32 address_register, u32 data_register,
+                                             MemoryAccessSize size, bool is_signed, bool is_load)
+{
+  DebugAssert(g_settings.IsUsingFastmem());
+  DebugAssert(address_register < NUM_HOST_REGS);
+  DebugAssert(data_register < NUM_HOST_REGS);
+
+  u32 gpr_bitmask = 0;
+  for (u32 i = 0; i < NUM_HOST_REGS; i++)
+  {
+    if (IsHostRegAllocated(i))
+      gpr_bitmask |= (1u << i);
+  }
+
+  CPU::NewRec::AddLoadStoreInfo(code_address, code_size, m_current_instruction_pc, m_cycles, gpr_bitmask,
+                                static_cast<u8>(address_register), static_cast<u8>(data_register), size, is_signed,
+                                is_load);
+}
+
 void CPU::NewRec::Compiler::CompileInstruction()
 {
 #ifdef _DEBUG

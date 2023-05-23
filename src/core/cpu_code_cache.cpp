@@ -272,13 +272,6 @@ void Initialize()
 
 void ClearState()
 {
-  if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
-  {
-    s_code_buffer.Reset();
-    CPU::NewRec::Reset();
-    return;
-  }
-
   Bus::ClearRAMCodePageFlags();
   for (auto& it : m_ram_block_map)
     it.clear();
@@ -296,14 +289,14 @@ void ClearState()
 
 void Shutdown()
 {
+  CPU::NewRec::Shutdown();
   ClearState();
+
 #ifdef WITH_RECOMPILER
   ShutdownFastmem();
   FreeFastMap();
   s_code_buffer.Destroy();
 #endif
-
-  CPU::NewRec::Shutdown();
 }
 
 template<PGXPMode pgxp_mode>
@@ -489,7 +482,7 @@ JitCodeBuffer& GetCodeBuffer()
 
 void Reinitialize()
 {
-  ClearState();
+  CPU::NewRec::Shutdown();
 
 #ifdef WITH_RECOMPILER
 
@@ -518,15 +511,26 @@ void Reinitialize()
       CompileDispatcher();
       ResetFastMap();
     }
+    else if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
+    {
+      CPU::NewRec::Initialize();
+    }
   }
 #endif
 }
 
 void Flush()
 {
+  if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
+  {
+    s_code_buffer.Reset();
+    CPU::NewRec::Reset();
+    return;
+  }
+
   ClearState();
 #ifdef WITH_RECOMPILER
-  if (g_settings.cpu_execution_mode == CPUExecutionMode::Recompiler)
+  if (g_settings.IsUsingRecompiler())
     CompileDispatcher();
 #endif
 }
@@ -1152,6 +1156,13 @@ Common::PageFaultHandler::HandlerResult MMapPageFaultHandler(void* exception_pc,
 
   Log_DevPrintf("Page fault handler invoked at PC=%p Address=%p %s, fastmem offset 0x%08X", exception_pc, fault_address,
                 is_write ? "(write)" : "(read)", fastmem_address);
+
+  if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
+  {
+    return CPU::NewRec::BackpatchLoadStore(exception_pc, fastmem_address) ?
+             Common::PageFaultHandler::HandlerResult::ContinueExecution :
+             Common::PageFaultHandler::HandlerResult::ExecuteNextHandler;
+  }
 
   // use upper_bound to find the next block after the pc
   HostCodeMap::iterator upper_iter =

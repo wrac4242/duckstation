@@ -104,7 +104,6 @@ void UpdateFastmemBase();
 /// Executes interpreter loop.
 void Execute();
 void SingleStep();
-void RunEvents();
 
 // Forces an early exit from the CPU dispatcher.
 void ExitExecution();

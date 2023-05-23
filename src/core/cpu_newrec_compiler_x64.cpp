@@ -35,9 +35,147 @@ Log_SetChannel(CPU::NewRec);
 #define RXARG1 cg->rcx
 #define RXARG2 cg->rdx
 #define RXARG3 cg->r8
+#define RMEMBASE cg->rbp
 #else
 #error fixme
 #endif
+
+static constexpr u32 BACKPATCH_JMP_SIZE = 5;
+
+static bool IsCallerSavedRegister(u32 id)
+{
+#ifdef _WIN32
+  // The x64 ABI considers the registers RAX, RCX, RDX, R8, R9, R10, R11, and XMM0-XMM5 volatile.
+  return (id <= 2 || (id >= 8 && id <= 11));
+#else
+  // rax, rdi, rsi, rdx, rcx, r8, r9, r10, r11 are scratch registers.
+  return (id <= 2 || id == 6 || id == 7 || (id >= 8 && id <= 11));
+#endif
+}
+
+#ifdef DUMP_BLOCKS
+
+static ZydisFormatterFunc s_old_print_address;
+
+static ZyanStatus ZydisFormatterPrintAddressAbsolute(const ZydisFormatter* formatter, ZydisFormatterBuffer* buffer,
+                                                     ZydisFormatterContext* context)
+{
+  using namespace CPU;
+
+  ZyanU64 address;
+  ZYAN_CHECK(ZydisCalcAbsoluteAddress(context->instruction, context->operand, context->runtime_address, &address));
+
+  char buf[128];
+  u32 len = 0;
+
+#define A(x) static_cast<ZyanU64>(reinterpret_cast<uintptr_t>(x))
+
+  if (address >= A(Bus::g_ram) && address < A(Bus::g_ram + Bus::g_ram_size))
+  {
+    len = snprintf(buf, sizeof(buf), "g_ram+0x%08X", static_cast<u32>(address - A(Bus::g_ram)));
+  }
+  else if (address >= A(&g_state.regs) &&
+           address < A(reinterpret_cast<const u8*>(&g_state.regs) + sizeof(CPU::Registers)))
+  {
+    len = snprintf(buf, sizeof(buf), "g_state.regs.%s",
+                   GetRegName(static_cast<CPU::Reg>(((address - A(&g_state.regs.r[0])) / 4u))));
+  }
+  else if (address >= A(&g_state.cop0_regs) &&
+           address < A(reinterpret_cast<const u8*>(&g_state.cop0_regs) + sizeof(CPU::Cop0Registers)))
+  {
+    for (const DebuggerRegisterListEntry& rle : g_debugger_register_list)
+    {
+      if (address == static_cast<ZyanU64>(reinterpret_cast<uintptr_t>(rle.value_ptr)))
+      {
+        len = snprintf(buf, sizeof(buf), "g_state.cop0_regs.%s", rle.name);
+        break;
+      }
+    }
+  }
+  else if (address >= A(&g_state.gte_regs) &&
+           address < A(reinterpret_cast<const u8*>(&g_state.gte_regs) + sizeof(GTE::Regs)))
+  {
+    for (const DebuggerRegisterListEntry& rle : g_debugger_register_list)
+    {
+      if (address == static_cast<ZyanU64>(reinterpret_cast<uintptr_t>(rle.value_ptr)))
+      {
+        len = snprintf(buf, sizeof(buf), "g_state.gte_regs.%s", rle.name);
+        break;
+      }
+    }
+  }
+  else if (address == A(&g_state.pending_ticks))
+  {
+    len = snprintf(buf, sizeof(buf), "g_state.pending_ticks");
+  }
+  else if (address == A(&g_state.downcount))
+  {
+    len = snprintf(buf, sizeof(buf), "g_state.downcount");
+  }
+
+#undef A
+
+  if (len > 0)
+  {
+    ZYAN_CHECK(ZydisFormatterBufferAppend(buffer, ZYDIS_TOKEN_SYMBOL));
+    ZyanString* string;
+    ZYAN_CHECK(ZydisFormatterBufferGetString(buffer, &string));
+    return ZyanStringAppendFormat(string, "&%s", buf);
+  }
+
+  return s_old_print_address(formatter, buffer, context);
+}
+
+static void DisassembleAndLog(const void* start, u32 size)
+{
+  ZydisDecoder disas_decoder;
+  ZydisFormatter disas_formatter;
+  ZydisDecodedInstruction disas_instruction;
+  ZydisDecodedOperand disas_operands[ZYDIS_MAX_OPERAND_COUNT];
+  ZydisDecoderInit(&disas_decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+  ZydisFormatterInit(&disas_formatter, ZYDIS_FORMATTER_STYLE_INTEL);
+  s_old_print_address = (ZydisFormatterFunc)&ZydisFormatterPrintAddressAbsolute;
+  ZydisFormatterSetHook(&disas_formatter, ZYDIS_FORMATTER_FUNC_PRINT_ADDRESS_ABS, (const void**)&s_old_print_address);
+
+  const u8* ptr = static_cast<const u8*>(start);
+  ZyanUSize remaining = size;
+  while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&disas_decoder, ptr, remaining, &disas_instruction, disas_operands)))
+  {
+    char buffer[256];
+    if (ZYAN_SUCCESS(ZydisFormatterFormatInstruction(&disas_formatter, &disas_instruction, disas_operands,
+                                                     ZYDIS_MAX_OPERAND_COUNT, buffer, sizeof(buffer),
+                                                     static_cast<ZyanU64>(reinterpret_cast<uintptr_t>(ptr)), nullptr)))
+    {
+      Log_DebugPrintf("    %016" PRIX64 "    %s", static_cast<u64>(reinterpret_cast<uintptr_t>(ptr)), buffer);
+    }
+
+    ptr += disas_instruction.length;
+    remaining -= disas_instruction.length;
+  }
+}
+
+static u32 GetHostInstructionCount(const void* start, u32 size)
+{
+  ZydisDecoder disas_decoder;
+  ZydisDecodedInstruction disas_instruction;
+  ZydisDecoderContext disas_context;
+  ZydisDecoderInit(&disas_decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+
+  const u8* ptr = static_cast<const u8*>(start);
+  ZyanUSize remaining = size;
+  u32 inst_count = 0;
+  while (
+    ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(&disas_decoder, &disas_context, ptr, remaining, &disas_instruction)))
+  {
+    ptr += disas_instruction.length;
+    remaining -= disas_instruction.length;
+    inst_count++;
+  }
+
+  return inst_count;
+}
+
+#endif // DUMP_BLOCKS
 
 using namespace Xbyak;
 
@@ -57,17 +195,6 @@ CPU::NewRec::X64Compiler::X64Compiler() = default;
 
 CPU::NewRec::X64Compiler::~X64Compiler() = default;
 
-bool CPU::NewRec::X64Compiler::IsCallerSavedRegister(u32 id)
-{
-#ifdef _WIN32
-  // The x64 ABI considers the registers RAX, RCX, RDX, R8, R9, R10, R11, and XMM0-XMM5 volatile.
-  return (id <= 2 || (id >= 8 && id <= 11));
-#else
-  // rax, rdi, rsi, rdx, rcx, r8, r9, r10, r11 are scratch registers.
-  return (id <= 2 || id == 6 || id == 7 || (id >= 8 && id <= 11));
-#endif
-}
-
 void CPU::NewRec::X64Compiler::Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer,
                                      u32 far_code_space)
 {
@@ -79,17 +206,22 @@ void CPU::NewRec::X64Compiler::Reset(Block* block, u8* code_buffer, u32 code_buf
   m_far_emitter = std::make_unique<Xbyak::CodeGenerator>(far_code_space, far_code_buffer);
   cg = m_emitter.get();
 
+  // Need to wipe it out so it's correct when toggling fastmem.
+  m_host_regs = {};
+
+  const u32 membase_idx = g_settings.IsUsingFastmem() ? static_cast<u32>(RMEMBASE.getIdx()) : NUM_HOST_REGS;
   for (u32 i = 0; i < NUM_HOST_REGS; i++)
   {
+    HostRegAlloc& ra = m_host_regs[i];
+
     if (i == static_cast<u32>(RWRET.getIdx()) || i == static_cast<u32>(RWARG1.getIdx()) ||
         i == static_cast<u32>(RWARG2.getIdx()) || i == static_cast<u32>(RWARG3.getIdx()) ||
-        i == static_cast<u32>(cg->rsp.getIdx()) ||
+        i == static_cast<u32>(cg->rsp.getIdx()) || i == membase_idx ||
         i == static_cast<u32>(cg->ecx.getIdx()) /* keep ecx free for shifts, maybe use BMI? */)
     {
       continue;
     }
 
-    HostRegAlloc& ra = m_host_regs[i];
     ra.flags = HR_USABLE | (IsCallerSavedRegister(i) ? 0 : HR_CALLEE_SAVED);
   }
 }
@@ -124,7 +256,7 @@ void CPU::NewRec::X64Compiler::BeginBlock()
 #endif
 
 #if 0
-  if (m_block->pc == 0x80047728)
+  if (m_block->pc == 0xBFC0703C)
   {
     //__debugbreak();
     cg->db(0xcc);
@@ -230,126 +362,22 @@ const void* CPU::NewRec::X64Compiler::GetCurrentCodePointer()
   return cg->getCurr();
 }
 
-#ifdef DUMP_BLOCKS
-static ZydisFormatterFunc s_old_print_address;
-
-static ZyanStatus ZydisFormatterPrintAddressAbsolute(const ZydisFormatter* formatter, ZydisFormatterBuffer* buffer,
-                                                     ZydisFormatterContext* context)
-{
-  using namespace CPU;
-
-  ZyanU64 address;
-  ZYAN_CHECK(ZydisCalcAbsoluteAddress(context->instruction, context->operand, context->runtime_address, &address));
-
-  char buf[128];
-  u32 len = 0;
-
-#define A(x) static_cast<ZyanU64>(reinterpret_cast<uintptr_t>(x))
-
-  if (address >= A(Bus::g_ram) && address < A(Bus::g_ram + Bus::g_ram_size))
-  {
-    len = snprintf(buf, sizeof(buf), "g_ram+0x%08X", static_cast<u32>(address - A(Bus::g_ram)));
-  }
-  else if (address >= A(&g_state.regs) &&
-           address < A(reinterpret_cast<const u8*>(&g_state.regs) + sizeof(CPU::Registers)))
-  {
-    len = snprintf(buf, sizeof(buf), "g_state.regs.%s",
-                   GetRegName(static_cast<CPU::Reg>(((address - A(&g_state.regs.r[0])) / 4u))));
-  }
-  else if (address >= A(&g_state.cop0_regs) &&
-           address < A(reinterpret_cast<const u8*>(&g_state.cop0_regs) + sizeof(CPU::Cop0Registers)))
-  {
-    for (const DebuggerRegisterListEntry& rle : g_debugger_register_list)
-    {
-      if (address == static_cast<ZyanU64>(reinterpret_cast<uintptr_t>(rle.value_ptr)))
-      {
-        len = snprintf(buf, sizeof(buf), "g_state.cop0_regs.%s", rle.name);
-        break;
-      }
-    }
-  }
-  else if (address >= A(&g_state.gte_regs) &&
-           address < A(reinterpret_cast<const u8*>(&g_state.gte_regs) + sizeof(GTE::Regs)))
-  {
-    for (const DebuggerRegisterListEntry& rle : g_debugger_register_list)
-    {
-      if (address == static_cast<ZyanU64>(reinterpret_cast<uintptr_t>(rle.value_ptr)))
-      {
-        len = snprintf(buf, sizeof(buf), "g_state.gte_regs.%s", rle.name);
-        break;
-      }
-    }
-  }
-  else if (address == A(&g_state.pending_ticks))
-  {
-    len = snprintf(buf, sizeof(buf), "g_state.pending_ticks");
-  }
-  else if (address == A(&g_state.downcount))
-  {
-    len = snprintf(buf, sizeof(buf), "g_state.downcount");
-  }
-
-#undef A
-
-  if (len > 0)
-  {
-    ZYAN_CHECK(ZydisFormatterBufferAppend(buffer, ZYDIS_TOKEN_SYMBOL));
-    ZyanString* string;
-    ZYAN_CHECK(ZydisFormatterBufferGetString(buffer, &string));
-    return ZyanStringAppendFormat(string, "&%s", buf);
-  }
-
-  return s_old_print_address(formatter, buffer, context);
-}
-#endif
-
 void CPU::NewRec::X64Compiler::DisassembleAndLog(const void* start, u32 size)
 {
-  ZydisDecoder disas_decoder;
-  ZydisFormatter disas_formatter;
-  ZydisDecodedInstruction disas_instruction;
-  ZydisDecodedOperand disas_operands[ZYDIS_MAX_OPERAND_COUNT];
-  ZydisDecoderInit(&disas_decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
-  ZydisFormatterInit(&disas_formatter, ZYDIS_FORMATTER_STYLE_INTEL);
-  s_old_print_address = (ZydisFormatterFunc)&ZydisFormatterPrintAddressAbsolute;
-  ZydisFormatterSetHook(&disas_formatter, ZYDIS_FORMATTER_FUNC_PRINT_ADDRESS_ABS, (const void**)&s_old_print_address);
-
-  const u8* ptr = static_cast<const u8*>(start);
-  ZyanUSize remaining = size;
-  while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&disas_decoder, ptr, remaining, &disas_instruction, disas_operands)))
-  {
-    char buffer[256];
-    if (ZYAN_SUCCESS(ZydisFormatterFormatInstruction(&disas_formatter, &disas_instruction, disas_operands,
-                                                     ZYDIS_MAX_OPERAND_COUNT, buffer, sizeof(buffer),
-                                                     static_cast<ZyanU64>(reinterpret_cast<uintptr_t>(ptr)), nullptr)))
-    {
-      Log_DebugPrintf("    %016" PRIX64 "    %s", static_cast<u64>(reinterpret_cast<uintptr_t>(ptr)), buffer);
-    }
-
-    ptr += disas_instruction.length;
-    remaining -= disas_instruction.length;
-  }
+#ifdef DUMP_BLOCKS
+  ::DisassembleAndLog(start, size);
+#else
+  Log_ErrorPrint("Not compiled with DUMP_BLOCKS");
+#endif
 }
 
 u32 CPU::NewRec::X64Compiler::GetHostInstructionCount(const void* start, u32 size)
 {
-  ZydisDecoder disas_decoder;
-  ZydisDecodedInstruction disas_instruction;
-  ZydisDecoderContext disas_context;
-  ZydisDecoderInit(&disas_decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
-
-  const u8* ptr = static_cast<const u8*>(start);
-  ZyanUSize remaining = size;
-  u32 inst_count = 0;
-  while (
-    ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(&disas_decoder, &disas_context, ptr, remaining, &disas_instruction)))
-  {
-    ptr += disas_instruction.length;
-    remaining -= disas_instruction.length;
-    inst_count++;
-  }
-
-  return inst_count;
+#ifdef DUMP_BLOCKS
+  return ::GetHostInstructionCount(start, size);
+#else
+  return 0;
+#endif
 }
 
 void CPU::NewRec::X64Compiler::LoadHostRegWithConstant(u32 reg, u32 val)
@@ -1205,6 +1233,9 @@ void CPU::NewRec::X64Compiler::Compile_slt(CompileFlags cf, bool sign)
 
 void CPU::NewRec::X64Compiler::FlushForLoadStore(const std::optional<VirtualMemoryAddress>& address, bool store)
 {
+  if (g_settings.IsUsingFastmem())
+    return;
+
   // TODO: Stores don't need to flush GTE cycles...
   Flush(FLUSH_FOR_C_CALL | FLUSH_FOR_LOADSTORE);
 }
@@ -1247,6 +1278,46 @@ void CPU::NewRec::X64Compiler::GenerateLoad(const Xbyak::Reg32& addr_reg, Memory
                                             const RegAllocFn& dst_reg_alloc)
 {
   const bool checked = g_settings.cpu_recompiler_memory_exceptions;
+  if (!checked && g_settings.IsUsingFastmem())
+  {
+    m_cycles += Bus::RAM_READ_TICKS;
+
+    const Reg32 dst = dst_reg_alloc();
+    u8* start = cg->getCurr<u8*>();
+    switch (size)
+    {
+      case MemoryAccessSize::Byte:
+      {
+        sign ? cg->movsx(dst, cg->byte[RMEMBASE + addr_reg.cvt64()]) :
+               cg->movzx(dst, cg->byte[RMEMBASE + addr_reg.cvt64()]);
+      }
+      break;
+
+      case MemoryAccessSize::HalfWord:
+      {
+        sign ? cg->movsx(dst, cg->word[RMEMBASE + addr_reg.cvt64()]) :
+               cg->movzx(dst, cg->word[RMEMBASE + addr_reg.cvt64()]);
+      }
+      break;
+
+      case MemoryAccessSize::Word:
+      {
+        cg->mov(dst, cg->word[RMEMBASE + addr_reg.cvt64()]);
+      }
+      break;
+    }
+
+    u8* end = cg->getCurr<u8*>();
+    while ((end - start) < BACKPATCH_JMP_SIZE)
+    {
+      cg->nop();
+      end = cg->getCurr<u8*>();
+    }
+
+    AddLoadStoreInfo(start, static_cast<u32>(end - start), static_cast<u32>(addr_reg.getIdx()),
+                     static_cast<u32>(dst.getIdx()), size, sign, true);
+    return;
+  }
 
   if (addr_reg != RWARG1)
     cg->mov(RWARG1, addr_reg);
@@ -1326,6 +1397,35 @@ void CPU::NewRec::X64Compiler::GenerateStore(const Xbyak::Reg32& addr_reg, const
                                              MemoryAccessSize size)
 {
   const bool checked = g_settings.cpu_recompiler_memory_exceptions;
+  if (!checked && g_settings.IsUsingFastmem())
+  {
+    u8* start = cg->getCurr<u8*>();
+    switch (size)
+    {
+      case MemoryAccessSize::Byte:
+        cg->mov(cg->byte[RMEMBASE + addr_reg.cvt64()], value_reg.cvt8());
+        break;
+
+      case MemoryAccessSize::HalfWord:
+        cg->mov(cg->word[RMEMBASE + addr_reg.cvt64()], value_reg.cvt16());
+        break;
+
+      case MemoryAccessSize::Word:
+        cg->mov(cg->word[RMEMBASE + addr_reg.cvt64()], value_reg.cvt32());
+        break;
+    }
+
+    u8* end = cg->getCurr<u8*>();
+    while ((end - start) < BACKPATCH_JMP_SIZE)
+    {
+      cg->nop();
+      end = cg->getCurr<u8*>();
+    }
+
+    AddLoadStoreInfo(start, static_cast<u32>(end - start), static_cast<u32>(addr_reg.getIdx()),
+                     static_cast<u32>(value_reg.getIdx()), size, false, false);
+    return;
+  }
 
   if (addr_reg != RWARG1)
     cg->mov(RWARG1, addr_reg);
@@ -1569,7 +1669,7 @@ void CPU::NewRec::X64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize siz
                                            const std::optional<VirtualMemoryAddress>& address)
 {
   DebugAssert(size == MemoryAccessSize::Word && !sign);
-  FlushForLoadStore(address, false);
+  FlushForLoadStore(address, true);
 
   // TODO: if address is constant, this can be simplified..
   // We'd need to be careful here if we weren't overwriting it..
@@ -1725,8 +1825,28 @@ void CPU::NewRec::X64Compiler::Compile_mtc0(CompileFlags cf)
 
   if (reg == Cop0Reg::SR && g_settings.IsUsingFastmem())
   {
-    // TODO: changing SR[Isc] needs to update fastmem views
-    Log_WarningPrintf("TODO: changing SR[Isc] needs to update fastmem views");
+    // TODO: replace with register backup
+    // We could just inline the whole thing..
+    Flush(FLUSH_FOR_C_CALL);
+
+    Label unchanged;
+    cg->test(changed_bits, 1u << 16);
+    SwitchToFarCode(true, &CodeGenerator::jnz);
+    cg->push(RWARG1);
+    cg->push(RWARG2);
+#ifdef _WIN32
+    cg->sub(cg->rsp, 32);
+#endif
+    cg->call(&CPU::UpdateFastmemBase);
+#ifdef _WIN32
+    cg->add(cg->rsp, 32);
+#endif
+    cg->pop(RWARG2);
+    cg->pop(RWARG1);
+    cg->mov(RMEMBASE, cg->qword[PTR(&g_state.fastmem_base)]);
+    SwitchToNearCode(true);
+
+    cg->L(unchanged);
   }
 
   if (reg == Cop0Reg::SR || reg == Cop0Reg::CAUSE)
@@ -1903,7 +2023,7 @@ void CPU::NewRec::X64Compiler::Compile_cop2(CompileFlags cf)
   AddGTETicks(func_ticks);
 }
 
-u32 CPU::NewRec::X64Compiler::CompileASMFunctions(u8* code, u32 code_size)
+u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
 {
   CodeGenerator acg(code_size, code);
   CodeGenerator* cg = &acg;
@@ -1936,6 +2056,10 @@ u32 CPU::NewRec::X64Compiler::CompileASMFunctions(u8* code, u32 code_size)
         cur_stack_offset += sizeof(void*);
       }
     }
+
+    // Fastmem setup
+    if (g_settings.IsUsingFastmem())
+      cg->mov(RMEMBASE, cg->qword[PTR(&g_state.fastmem_base)]);
 
     // Downcount isn't set on entry, so we need to initialize it
     cg->mov(RXARG1, cg->qword[PTR(TimingEvents::GetHeadEventPtr())]);
@@ -2026,11 +2150,6 @@ u32 CPU::NewRec::X64Compiler::CompileASMFunctions(u8* code, u32 code_size)
   return static_cast<u32>(cg->getSize());
 }
 
-u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
-{
-  return X64Compiler::CompileASMFunctions(code, code_size);
-}
-
 u32 CPU::NewRec::EmitJump(void* code, const void* dst)
 {
   u8* ptr = static_cast<u8*>(code);
@@ -2042,5 +2161,142 @@ u32 CPU::NewRec::EmitJump(void* code, const void* dst)
 
   const s32 disp32 = static_cast<s32>(disp);
   std::memcpy(ptr, &disp32, sizeof(disp32));
-  return 5;
+  return BACKPATCH_JMP_SIZE;
+}
+
+u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* code_address, u32 code_size,
+                                    TickCount cycles_to_add, TickCount cycles_to_remove, u32 gpr_bitmask,
+                                    u8 address_register, u8 data_register, MemoryAccessSize size, bool is_signed,
+                                    bool is_load)
+{
+  CodeGenerator acg(thunk_space, thunk_code);
+  CodeGenerator* cg = &acg;
+
+  static constexpr u32 GPR_SIZE = 8;
+
+  // on win32, we need to reserve an additional 32 bytes shadow space when calling out to C
+#ifdef _WIN32
+  static constexpr u32 SHADOW_SIZE = 32;
+#else
+  static constexpr u32 SHADOW_SIZE = 0;
+#endif
+
+  // save regs
+  u32 num_gprs = 0;
+
+  for (u32 i = 0; i < NUM_HOST_REGS; i++)
+  {
+    if ((gpr_bitmask & (1u << i)) && IsCallerSavedRegister(i) && (!is_load || data_register != i))
+      num_gprs++;
+  }
+
+  const u32 stack_size = (((num_gprs + 1) & ~1u) * GPR_SIZE) + SHADOW_SIZE;
+
+  if (stack_size > 0)
+  {
+    cg->sub(cg->rsp, stack_size);
+
+    u32 stack_offset = SHADOW_SIZE;
+    for (u32 i = 0; i < NUM_HOST_REGS; i++)
+    {
+      if ((gpr_bitmask & (1u << i)) && IsCallerSavedRegister(i) && (!is_load || data_register != i))
+      {
+        cg->mov(cg->qword[cg->rsp + stack_offset], Reg64(i));
+        stack_offset += GPR_SIZE;
+      }
+    }
+  }
+
+  if (cycles_to_add != 0)
+    cg->add(cg->dword[PTR(&g_state.pending_ticks)], cycles_to_add);
+
+  if (address_register != static_cast<u8>(RWARG1.getIdx()))
+    cg->mov(RWARG1, Reg32(address_register));
+
+  if (!is_load)
+  {
+    if (address_register != static_cast<u8>(RWARG2.getIdx()))
+      cg->mov(RWARG2, Reg32(data_register));
+  }
+
+  switch (size)
+  {
+    case MemoryAccessSize::Byte:
+    {
+      cg->call(is_load ? static_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryByte) :
+                         static_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryByte));
+    }
+    break;
+    case MemoryAccessSize::HalfWord:
+    {
+      cg->call(is_load ? static_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryHalfWord) :
+                         static_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryHalfWord));
+    }
+    break;
+    case MemoryAccessSize::Word:
+    {
+      cg->call(is_load ? static_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryWord) :
+                         static_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryWord));
+    }
+    break;
+  }
+
+  if (is_load)
+  {
+    const Reg32 dst = Reg32(data_register);
+    switch (size)
+    {
+      case MemoryAccessSize::Byte:
+      {
+        is_signed ? cg->movsx(dst, RWRET.cvt8()) : cg->movzx(dst, RWRET.cvt8());
+      }
+      break;
+      case MemoryAccessSize::HalfWord:
+      {
+        is_signed ? cg->movsx(dst, RWRET.cvt16()) : cg->movzx(dst, RWRET.cvt16());
+      }
+      break;
+      case MemoryAccessSize::Word:
+      {
+        if (dst != RWRET)
+          cg->mov(dst, RWRET);
+      }
+      break;
+    }
+  }
+
+  if (cycles_to_remove != 0)
+    cg->sub(cg->dword[PTR(&g_state.pending_ticks)], cycles_to_remove);
+
+  // restore regs
+  if (stack_size > 0)
+  {
+    u32 stack_offset = SHADOW_SIZE;
+    for (u32 i = 0; i < NUM_HOST_REGS; i++)
+    {
+      if ((gpr_bitmask & (1u << i)) && IsCallerSavedRegister(i) && (!is_load || data_register != i))
+      {
+        cg->mov(Reg64(i), cg->qword[cg->rsp + stack_offset]);
+        stack_offset += GPR_SIZE;
+      }
+    }
+
+    cg->add(cg->rsp, stack_size);
+  }
+
+  cg->jmp(static_cast<const u8*>(code_address) + code_size);
+
+  // backpatch to a jump to the slowmem handler
+  EmitJump(code_address, cg->getCode<const void*>());
+
+  // fill the rest of it with nops, if any
+  DebugAssert(code_size >= BACKPATCH_JMP_SIZE);
+  if (code_size > BACKPATCH_JMP_SIZE)
+    std::memset(static_cast<u8*>(code_address) + BACKPATCH_JMP_SIZE, 0x90, code_size - BACKPATCH_JMP_SIZE);
+
+#ifdef _DEBUG
+  ::DisassembleAndLog(thunk_code, static_cast<u32>(cg->getSize()));
+#endif
+
+  return static_cast<u32>(cg->getSize());
 }
