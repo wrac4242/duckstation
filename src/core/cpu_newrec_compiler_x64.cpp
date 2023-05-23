@@ -69,7 +69,8 @@ bool CPU::NewRec::X64Compiler::IsCallerSavedRegister(u32 id)
 #endif
 }
 
-void CPU::NewRec::X64Compiler::Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer, u32 far_code_space)
+void CPU::NewRec::X64Compiler::Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer,
+                                     u32 far_code_space)
 {
   Compiler::Reset(block, code_buffer, code_buffer_space, far_code_buffer, far_code_space);
 
@@ -92,6 +93,28 @@ void CPU::NewRec::X64Compiler::Reset(Block* block, u8* code_buffer, u32 code_buf
     HostRegAlloc& ra = m_host_regs[i];
     ra.flags = HR_USABLE | (IsCallerSavedRegister(i) ? 0 : HR_CALLEE_SAVED);
   }
+}
+
+void CPU::NewRec::X64Compiler::SwitchToFarCode(bool emit_jump, void (Xbyak::CodeGenerator::*jump_op)(const void*))
+{
+  DebugAssert(cg == m_emitter.get());
+  if (emit_jump)
+  {
+    const void* fcptr = m_far_emitter->getCurr<const void*>();
+    (jump_op) ? (cg->*jump_op)(fcptr) : cg->jmp(fcptr);
+  }
+  cg = m_far_emitter.get();
+}
+
+void CPU::NewRec::X64Compiler::SwitchToNearCode(bool emit_jump, void (Xbyak::CodeGenerator::*jump_op)(const void*))
+{
+  DebugAssert(cg == m_far_emitter.get());
+  if (emit_jump)
+  {
+    const void* fcptr = m_emitter->getCurr<const void*>();
+    (jump_op) ? (cg->*jump_op)(fcptr) : cg->jmp(fcptr);
+  }
+  cg = m_emitter.get();
 }
 
 void CPU::NewRec::X64Compiler::BeginBlock()
@@ -579,16 +602,14 @@ void CPU::NewRec::X64Compiler::CheckBranchTarget(const Xbyak::Reg32& pcreg)
   if (!g_settings.cpu_recompiler_memory_exceptions)
     return;
 
-  // TODO: this gets too large..
-  Label aligned;
   cg->test(pcreg, 0x3);
-  cg->jz(aligned, CodeGenerator::T_NEAR);
+  SwitchToFarCode(true, &CodeGenerator::jnz);
 
   BackupHostState();
   EndBlockWithException(Exception::AdEL);
 
   RestoreHostState();
-  cg->L(aligned);
+  SwitchToNearCode(false);
 }
 
 void CPU::NewRec::X64Compiler::Compile_jr(CompileFlags cf)
@@ -954,10 +975,8 @@ void CPU::NewRec::X64Compiler::Compile_divu(CompileFlags cf)
 
 void CPU::NewRec::X64Compiler::TestOverflow(const Xbyak::Reg32& result)
 {
-  // TODO: far code
+  SwitchToFarCode(true, &Xbyak::CodeGenerator::jo);
 
-  Label no_overflow;
-  cg->jno(no_overflow);
   BackupHostState();
 
   // toss the result
@@ -966,7 +985,8 @@ void CPU::NewRec::X64Compiler::TestOverflow(const Xbyak::Reg32& result)
   EndBlockWithException(Exception::Ov);
 
   RestoreHostState();
-  cg->L(no_overflow);
+
+  SwitchToNearCode(false);
 }
 
 void CPU::NewRec::X64Compiler::Compile_dst_op(

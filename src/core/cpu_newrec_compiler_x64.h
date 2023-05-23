@@ -110,6 +110,8 @@ protected:
 
 private:
   static bool IsCallerSavedRegister(u32 id);
+  void SwitchToFarCode(bool emit_jump, void (Xbyak::CodeGenerator::*jump_op)(const void*) = nullptr);
+  void SwitchToNearCode(bool emit_jump, void (Xbyak::CodeGenerator::*jump_op)(const void*) = nullptr);
 
   Xbyak::Address MipsPtr(Reg r) const;
   Xbyak::Reg32 CFGetRegD(CompileFlags cf) const;
