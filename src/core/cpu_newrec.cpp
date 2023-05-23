@@ -25,6 +25,7 @@ static void InvalidCodeFunction();
 
 static void AllocateLUTs();
 static void ResetLUTs();
+static void CompileASMFunctions();
 
 static u32 ReadBlockInstructions(u32 start_pc);
 static void AddBlockToPageList(Block* block);
@@ -45,11 +46,9 @@ static bool s_lut_initialized = false;
 // for compiling
 static std::vector<Instruction> s_block_instructions;
 
-JitCodeBuffer g_code_buffer;
-
 const void* g_enter_recompiler;
 const void* g_exit_recompiler;
-const void* g_compile_block;
+const void* g_compile_or_revalidate_block;
 const void* g_check_events_and_dispatch;
 const void* g_dispatcher;
 
@@ -176,7 +175,7 @@ void CPU::NewRec::ResetLUTs()
       continue;
 
     for (u32 j = 0; j < LUT_TABLE_SIZE; j++)
-      ptr[j] = g_compile_block;
+      ptr[j] = g_compile_or_revalidate_block;
   }
 }
 
@@ -376,7 +375,7 @@ u32 CPU::NewRec::CreateBlockLink(Block* block, void* code, u32 newpc)
   if (g_settings.cpu_recompiler_block_linking)
   {
     const Block* next_block = LookupBlock(newpc);
-    dst = (next_block && !next_block->invalidated) ? next_block->host_code : g_compile_block;
+    dst = (next_block && !next_block->invalidated) ? next_block->host_code : g_compile_or_revalidate_block;
 
     BlockLinkMap::iterator iter = s_block_links.emplace(newpc, code);
     DebugAssert(block->num_exit_links < MAX_BLOCK_EXIT_LINKS);
@@ -384,7 +383,7 @@ u32 CPU::NewRec::CreateBlockLink(Block* block, void* code, u32 newpc)
   }
 
   Log_DebugPrintf("Linking %p with dst pc %08X to %p%s", code, newpc, dst,
-                  (dst == g_compile_block) ? "[compiler]" : "");
+                  (dst == g_compile_or_revalidate_block) ? "[compiler]" : "");
   return EmitJump(code, dst);
 }
 
@@ -397,7 +396,7 @@ void CPU::NewRec::BacklinkBlocks(u32 pc, const void* dst)
   for (auto it = link_range.first; it != link_range.second; ++it)
   {
     Log_DebugPrintf("Backlinking %p with dst pc %08X to %p%s", it->second, pc, dst,
-                    (dst == g_compile_block) ? "[compiler]" : "");
+                    (dst == g_compile_or_revalidate_block) ? "[compiler]" : "");
     EmitJump(it->second, dst);
   }
 }
@@ -414,6 +413,15 @@ void CPU::NewRec::InvalidCodeFunction()
   Panic("fixme");
 }
 
+void CPU::NewRec::CompileASMFunctions()
+{
+  JitCodeBuffer& buffer = CodeCache::GetCodeBuffer();
+  DebugAssert(buffer.GetTotalUsed() == 0);
+  const u32 asm_size = CompileASMFunctions(buffer.GetFreeCodePointer(), buffer.GetFreeCodeSpace());
+  Log_ProfilePrintf("ASM functions generated %u bytes of host code", asm_size);
+  buffer.CommitCode(asm_size);
+}
+
 bool CPU::NewRec::Initialize()
 {
   if (!s_lut_initialized)
@@ -422,22 +430,15 @@ bool CPU::NewRec::Initialize()
     AllocateLUTs();
   }
 
-  if (!g_code_buffer.Initialize(s_code_storage, sizeof(s_code_storage), 0, RECOMPILER_GUARD_SIZE))
-  {
-    Log_ErrorPrintf("Failed to allocate code buffer");
-    return false;
-  }
-
-  CompileASMFunctions();
-
   ResetLUTs();
+  CompileASMFunctions();
 
   return true;
 }
 
 void CPU::NewRec::Shutdown()
 {
-  g_code_buffer.Destroy();
+  //
 }
 
 void CPU::NewRec::Execute()
@@ -454,8 +455,8 @@ void CPU::NewRec::InvalidateBlocksWithPageNumber(u32 index)
   {
     if (!block->invalidated)
     {
-      SetFastMap(block->pc, g_compile_block);
-      BacklinkBlocks(block->pc, g_compile_block);
+      SetFastMap(block->pc, g_compile_or_revalidate_block);
+      BacklinkBlocks(block->pc, g_compile_or_revalidate_block);
       block->invalidated = true;
     }
 
@@ -468,7 +469,7 @@ void CPU::NewRec::InvalidateBlocksWithPageNumber(u32 index)
   Bus::ClearRAMCodePage(index);
 }
 
-void CPU::NewRec::ClearBlocks()
+void CPU::NewRec::Reset()
 {
   for (u32 i = 0; i < Bus::RAM_8MB_CODE_PAGE_COUNT; i++)
   {
@@ -486,4 +487,5 @@ void CPU::NewRec::ClearBlocks()
 
   std::memset(s_lut_block_pointers.get(), 0, sizeof(Block*) * GetLUTSlotCount(false));
   ResetLUTs();
+  CompileASMFunctions();
 }

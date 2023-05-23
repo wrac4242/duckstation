@@ -55,18 +55,16 @@ bool RevalidateBlock(Block* block);
 void CompileOrRevalidateBlock(u32 start_pc);
 u32 CreateBlockLink(Block* from_block, void* code, u32 newpc);
 
-void CompileASMFunctions();
+u32 CompileASMFunctions(u8* code, u32 code_size);
 u32 EmitJump(void* code, const void* dst);
 
 void SetFastMap(u32 pc, const void* function);
-
-extern JitCodeBuffer g_code_buffer;
 
 extern CodeLUTArray g_fast_map;
 
 extern const void* g_enter_recompiler;
 extern const void* g_exit_recompiler;
-extern const void* g_compile_block;
+extern const void* g_compile_or_revalidate_block;
 extern const void* g_check_events_and_dispatch;
 extern const void* g_dispatcher;
 extern const void* g_interpret_block;

@@ -21,7 +21,7 @@ public:
   X64Compiler();
   ~X64Compiler() override;
 
-  static void CompileASMFunctions();
+  static u32 CompileASMFunctions(u8* code, u32 code_size);
 
 protected:
   void DisassembleAndLog(const void* start, u32 size) override;
@@ -34,12 +34,12 @@ protected:
   void StoreHostRegToCPUPointer(u32 reg, const void* ptr);
   void CopyHostReg(u32 dst, u32 src) override;
 
-  void Reset(Block* block) override;
+  void Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer, u32 far_code_space) override;
   void BeginBlock() override;
   void EndBlock(const std::optional<u32>& newpc) override;
   void EndBlockWithException(Exception excode) override;
   void EndAndLinkBlock(const std::optional<u32>& newpc);
-  std::pair<const void*, u32> EndCompile() override;
+  const void* EndCompile(u32* code_size, u32* far_code_size) override;
 
   void Flush(u32 flags) override;
 
@@ -124,7 +124,9 @@ private:
   void MoveSToReg(const Xbyak::Reg32& dst, CompileFlags cf);
   void MoveTToReg(const Xbyak::Reg32& dst, CompileFlags cf);
 
-  std::unique_ptr<Xbyak::CodeGenerator> cg;
+  std::unique_ptr<Xbyak::CodeGenerator> m_emitter;
+  std::unique_ptr<Xbyak::CodeGenerator> m_far_emitter;
+  Xbyak::CodeGenerator* cg;
 };
 
 } // namespace CPU::NewRec

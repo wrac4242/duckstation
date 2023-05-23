@@ -8,10 +8,10 @@
 #include "cpu_core.h"
 #include "cpu_core_private.h"
 #include "cpu_disasm.h"
+#include "cpu_newrec_compiler_x64.h"
 #include "settings.h"
 #include "system.h"
 #include "timing_event.h"
-#include "cpu_newrec_compiler_x64.h"
 Log_SetChannel(CPU::CodeCache);
 
 #ifdef WITH_RECOMPILER
@@ -255,13 +255,15 @@ void Initialize()
       Panic("Failed to initialize code space");
     }
 
-    AllocateFastMap();
-
     if (g_settings.IsUsingFastmem() && !InitializeFastmem())
       Panic("Failed to initialize fastmem");
 
-    CompileDispatcher();
-    ResetFastMap();
+    if (g_settings.cpu_execution_mode == CPUExecutionMode::Recompiler)
+    {
+      AllocateFastMap();
+      CompileDispatcher();
+      ResetFastMap();
+    }
   }
 #endif
 
@@ -270,6 +272,13 @@ void Initialize()
 
 void ClearState()
 {
+  if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
+  {
+    s_code_buffer.Reset();
+    CPU::NewRec::Reset();
+    return;
+  }
+
   Bus::ClearRAMCodePageFlags();
   for (auto& it : m_ram_block_map)
     it.clear();
@@ -283,8 +292,6 @@ void ClearState()
   s_code_buffer.Reset();
   ResetFastMap();
 #endif
-
-  CPU::NewRec::ClearBlocks();
 }
 
 void Shutdown()
@@ -391,21 +398,6 @@ template<PGXPMode pgxp_mode>
   g_state.regs.npc = g_state.regs.pc;
 }
 
-[[noreturn]] void Execute()
-{
-  if (g_settings.gpu_pgxp_enable)
-  {
-    if (g_settings.gpu_pgxp_cpu)
-      ExecuteImpl<PGXPMode::CPU>();
-    else
-      ExecuteImpl<PGXPMode::Memory>();
-  }
-  else
-  {
-    ExecuteImpl<PGXPMode::Disabled>();
-  }
-}
-
 #ifdef WITH_RECOMPILER
 
 void CompileDispatcher()
@@ -429,7 +421,7 @@ FastMapTable* GetFastMapPointer()
   return s_fast_map;
 }
 
-void ExecuteRecompiler()
+static void ExecuteRecompiler()
 {
 #if 0
   for (;;)
@@ -456,6 +448,41 @@ void ExecuteRecompiler()
   // in case we switch to interpreter...
   // TODO: fixme
   g_state.regs.npc = g_state.regs.pc;
+}
+
+[[noreturn]] void Execute()
+{
+  switch (g_settings.cpu_execution_mode)
+  {
+    case CPUExecutionMode::Recompiler:
+      ExecuteRecompiler();
+      break;
+
+    case CPUExecutionMode::NewRec:
+      NewRec::Execute();
+      break;
+
+    default:
+    {
+      if (g_settings.gpu_pgxp_enable)
+      {
+        if (g_settings.gpu_pgxp_cpu)
+          ExecuteImpl<PGXPMode::CPU>();
+        else
+          ExecuteImpl<PGXPMode::Memory>();
+      }
+      else
+      {
+        ExecuteImpl<PGXPMode::Disabled>();
+      }
+    }
+    break;
+  }
+}
+
+JitCodeBuffer& GetCodeBuffer()
+{
+  return s_code_buffer;
 }
 
 #endif
@@ -485,9 +512,12 @@ void Reinitialize()
     if (g_settings.IsUsingFastmem() && !InitializeFastmem())
       Panic("Failed to initialize fastmem");
 
-    AllocateFastMap();
-    CompileDispatcher();
-    ResetFastMap();
+    if (g_settings.cpu_execution_mode == CPUExecutionMode::Recompiler)
+    {
+      AllocateFastMap();
+      CompileDispatcher();
+      ResetFastMap();
+    }
   }
 #endif
 }
@@ -496,7 +526,7 @@ void Flush()
 {
   ClearState();
 #ifdef WITH_RECOMPILER
-  if (g_settings.IsUsingRecompiler())
+  if (g_settings.cpu_execution_mode == CPUExecutionMode::Recompiler)
     CompileDispatcher();
 #endif
 }
@@ -511,7 +541,7 @@ void LogCurrentState()
   if ((TimingEvents::GetGlobalTickCounter() + GetPendingTicks()) < 2670364504)
     return;
 #endif
-  
+
   const auto& regs = g_state.regs;
   WriteToExecutionLog("tick=%u pc=%08X zero=%08X at=%08X v0=%08X v1=%08X a0=%08X a1=%08X a2=%08X a3=%08X t0=%08X "
                       "t1=%08X t2=%08X t3=%08X t4=%08X t5=%08X t6=%08X t7=%08X s0=%08X s1=%08X s2=%08X s3=%08X s4=%08X "
@@ -558,8 +588,8 @@ CodeBlock* LookupBlock(CodeBlockKey key, bool allow_flush)
       return nullptr;
   }
 
-  //NewRec::X64Compiler nrc;
-  //nrc.CompileBlock(key.GetPC());
+  // NewRec::X64Compiler nrc;
+  // nrc.CompileBlock(key.GetPC());
 
   CodeBlock* block = new CodeBlock(key);
   block->recompile_frame_number = System::GetFrameNumber();

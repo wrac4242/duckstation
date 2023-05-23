@@ -5,6 +5,7 @@
 #include "common/assert.h"
 #include "common/log.h"
 #include "common/string.h"
+#include "cpu_code_cache.h"
 #include "cpu_core_private.h"
 #include "cpu_disasm.h"
 #include "cpu_newrec_private.h"
@@ -24,7 +25,8 @@ const char* CPU::NewRec::Compiler::GetHostRegName(u32 reg) const
   return (reg < reg64_names.size()) ? reg64_names[reg] : "UNKNOWN";
 }
 
-void CPU::NewRec::Compiler::Reset(Block* block)
+void CPU::NewRec::Compiler::Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer,
+                                  u32 far_code_space)
 {
   m_block = block;
   m_compiler_pc = block->pc;
@@ -65,7 +67,9 @@ void CPU::NewRec::Compiler::BeginBlock()
 
 const void* CPU::NewRec::Compiler::CompileBlock(Block* block)
 {
-  Reset(block);
+  JitCodeBuffer& buffer = CodeCache::GetCodeBuffer();
+  Reset(block, buffer.GetFreeCodePointer(), buffer.GetFreeCodeSpace(), buffer.GetFreeFarCodePointer(),
+        buffer.GetFreeFarCodeSpace());
 
   Log_DebugPrintf("Block range: %08X -> %08X", block->pc, block->pc + block->size * sizeof(Instruction));
 
@@ -88,17 +92,17 @@ const void* CPU::NewRec::Compiler::CompileBlock(Block* block)
   for (u32 i = 1; i < static_cast<u32>(Reg::count); i++)
     DebugAssert(!m_constant_regs_dirty.test(i) && !m_constant_regs_valid.test(i));
 
-  const auto [code, size] = EndCompile();
+  u32 code_size, far_code_size;
+  const void* code = EndCompile(&code_size, &far_code_size);
+  buffer.CommitCode(code_size);
+  buffer.CommitFarCode(far_code_size);
 
-#if 0
-  Log_DebugPrintf("Whole block for %08X...", block->pc);
-  DisassembleAndLog(code, size);
-  Log_DebugPrintf(" --- %u bytes", size);
-#else
-  Log_ProfilePrintf("Whole block for %08X took %u bytes for %u instructions", block->pc, size, block->size);
-#endif
-
-  g_code_buffer.CommitCode(size);
+  Log_ProfilePrintf(
+    "%08X-%08X took %u + %u far host bytes for %u MIPS bytes (%u instructions), blowup: %.2fx, cache: %.2f%%/%.2f%%",
+    block->pc, block->pc + block->size * sizeof(Instruction), code_size, far_code_size,
+    block->size * sizeof(Instruction), block->size,
+    static_cast<float>(code_size) / static_cast<float>(block->size * sizeof(Instruction)), buffer.GetUsedPct(),
+    buffer.GetFarUsedPct());
 
   return code;
 }
@@ -433,7 +437,7 @@ bool CPU::NewRec::Compiler::TrySwapDelaySlot(Reg rs, Reg rt, Reg rd)
 
 is_safe:
 #ifdef _DEBUG
-  Log_WarningPrintf("Swapping delay slot %08X %s", m_current_instruction_pc + 4, disasm.GetCharArray());
+  Log_DevPrintf("Swapping delay slot %08X %s", m_current_instruction_pc + 4, disasm.GetCharArray());
 #endif
 
   CompileBranchDelaySlot();
@@ -445,7 +449,7 @@ is_safe:
 
 is_unsafe:
 #ifdef _DEBUG
-  Log_WarningPrintf("NOT swapping delay slot %08X %s", m_current_instruction_pc + 4, disasm.GetCharArray());
+  Log_DevPrintf("NOT swapping delay slot %08X %s", m_current_instruction_pc + 4, disasm.GetCharArray());
 #endif
 
   return false;

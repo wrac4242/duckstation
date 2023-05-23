@@ -128,7 +128,7 @@ using DispatcherFunction = void (*)();
 using SingleBlockDispatcherFunction = void (*)(const CodeBlock::HostCodePointer);
 
 FastMapTable* GetFastMapPointer();
-void ExecuteRecompiler();
+JitCodeBuffer& GetCodeBuffer();
 #endif
 
 /// Flushes the code cache, forcing all blocks to be recompiled.

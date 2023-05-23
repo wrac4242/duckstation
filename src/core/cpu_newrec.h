@@ -4,7 +4,7 @@
 namespace CPU::NewRec
 {
 bool Initialize();
-void ClearBlocks();
+void Reset();
 void Shutdown();
 void Execute();
 void InvalidateBlocksWithPageNumber(u32 index);

@@ -69,14 +69,15 @@ bool CPU::NewRec::X64Compiler::IsCallerSavedRegister(u32 id)
 #endif
 }
 
-void CPU::NewRec::X64Compiler::Reset(Block* block)
+void CPU::NewRec::X64Compiler::Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer, u32 far_code_space)
 {
-  Compiler::Reset(block);
+  Compiler::Reset(block, code_buffer, code_buffer_space, far_code_buffer, far_code_space);
 
-  if (cg)
-    cg.reset();
-
-  cg = std::make_unique<Xbyak::CodeGenerator>(g_code_buffer.GetFreeCodeSpace(), g_code_buffer.GetFreeCodePointer());
+  // TODO: don't recreate this every time..
+  DebugAssert(!m_emitter && !m_far_emitter && !cg);
+  m_emitter = std::make_unique<Xbyak::CodeGenerator>(code_buffer_space, code_buffer);
+  m_far_emitter = std::make_unique<Xbyak::CodeGenerator>(far_code_space, far_code_buffer);
+  cg = m_emitter.get();
 
   for (u32 i = 0; i < NUM_HOST_REGS; i++)
   {
@@ -191,9 +192,15 @@ void CPU::NewRec::X64Compiler::EndAndLinkBlock(const std::optional<u32>& newpc)
   m_block_ended = true;
 }
 
-std::pair<const void*, u32> CPU::NewRec::X64Compiler::EndCompile()
+const void* CPU::NewRec::X64Compiler::EndCompile(u32* code_size, u32* far_code_size)
 {
-  return std::pair<const void*, u32>(cg->getCode(), static_cast<u32>(cg->getSize()));
+  const void* code = m_emitter->getCode();
+  *code_size = static_cast<u32>(m_emitter->getSize());
+  *far_code_size = static_cast<u32>(m_far_emitter->getSize());
+  cg = nullptr;
+  m_far_emitter.reset();
+  m_emitter.reset();
+  return code;
 }
 
 const void* CPU::NewRec::X64Compiler::GetCurrentCodePointer()
@@ -802,12 +809,12 @@ void CPU::NewRec::X64Compiler::Compile_variable_shift(
   {
     MoveSToReg(cg->ecx, cf);
     MoveTToReg(rd, cf);
-    ((cg.get())->*op)(rd, cg->cl);
+    (cg->*op)(rd, cg->cl);
   }
   else
   {
     MoveTToReg(rd, cf);
-    ((cg.get())->*op_const)(rd, GetConstantRegU32(cf.MipsS()));
+    (cg->*op_const)(rd, GetConstantRegU32(cf.MipsS()));
   }
 }
 
@@ -970,25 +977,25 @@ void CPU::NewRec::X64Compiler::Compile_dst_op(
   {
     if (cf.host_d == cf.host_s)
     {
-      ((cg.get())->*op)(CFGetRegD(cf), CFGetRegT(cf));
+      (cg->*op)(CFGetRegD(cf), CFGetRegT(cf));
     }
     else if (cf.host_d == cf.host_t)
     {
       if (commutative)
       {
-        ((cg.get())->*op)(CFGetRegD(cf), CFGetRegS(cf));
+        (cg->*op)(CFGetRegD(cf), CFGetRegS(cf));
       }
       else
       {
         cg->mov(RWARG1, CFGetRegT(cf));
         cg->mov(CFGetRegD(cf), CFGetRegS(cf));
-        ((cg.get())->*op)(CFGetRegD(cf), RWARG1);
+        (cg->*op)(CFGetRegD(cf), RWARG1);
       }
     }
     else
     {
       cg->mov(CFGetRegD(cf), CFGetRegS(cf));
-      ((cg.get())->*op)(CFGetRegD(cf), CFGetRegT(cf));
+      (cg->*op)(CFGetRegD(cf), CFGetRegT(cf));
     }
   }
   else if (commutative && (cf.const_s || cf.const_t))
@@ -996,7 +1003,7 @@ void CPU::NewRec::X64Compiler::Compile_dst_op(
     const Reg32 rd = CFGetRegD(cf);
     (cf.const_s) ? MoveTToReg(rd, cf) : MoveSToReg(rd, cf);
     if (const u32 cv = GetConstantRegU32(cf.const_s ? cf.MipsS() : cf.MipsT()); cv != 0)
-      ((cg.get())->*op_const)(CFGetRegD(cf), cv);
+      (cg->*op_const)(CFGetRegD(cf), cv);
     else
       overflow = false;
   }
@@ -1007,19 +1014,19 @@ void CPU::NewRec::X64Compiler::Compile_dst_op(
     {
       cg->mov(RWARG1, CFGetRegT(cf));
       MoveSToReg(CFGetRegD(cf), cf);
-      ((cg.get())->*op)(CFGetRegD(cf), RWARG1);
+      (cg->*op)(CFGetRegD(cf), RWARG1);
     }
     else
     {
       MoveSToReg(CFGetRegD(cf), cf);
-      ((cg.get())->*op)(CFGetRegD(cf), CFGetRegT(cf));
+      (cg->*op)(CFGetRegD(cf), CFGetRegT(cf));
     }
   }
   else if (cf.const_t)
   {
     MoveSToReg(CFGetRegD(cf), cf);
     if (const u32 cv = GetConstantRegU32(cf.MipsT()); cv != 0)
-      ((cg.get())->*op_const)(CFGetRegD(cf), cv);
+      (cg->*op_const)(CFGetRegD(cf), cv);
     else
       overflow = false;
   }
@@ -1027,18 +1034,18 @@ void CPU::NewRec::X64Compiler::Compile_dst_op(
   {
     if (cf.host_d != cf.host_s)
       cg->mov(CFGetRegD(cf), CFGetRegS(cf));
-    ((cg.get())->*op)(CFGetRegD(cf), MipsPtr(cf.MipsT()));
+    (cg->*op)(CFGetRegD(cf), MipsPtr(cf.MipsT()));
   }
   else if (cf.valid_host_t)
   {
     if (cf.host_d != cf.host_t)
       cg->mov(CFGetRegD(cf), CFGetRegT(cf));
-    ((cg.get())->*op)(CFGetRegD(cf), MipsPtr(cf.MipsS()));
+    (cg->*op)(CFGetRegD(cf), MipsPtr(cf.MipsS()));
   }
   else
   {
     cg->mov(CFGetRegD(cf), MipsPtr(cf.MipsS()));
-    ((cg.get())->*op)(CFGetRegD(cf), MipsPtr(cf.MipsT()));
+    (cg->*op)(CFGetRegD(cf), MipsPtr(cf.MipsT()));
   }
 
   if (overflow)
@@ -1719,9 +1726,9 @@ void CPU::NewRec::X64Compiler::Compile_cop2(CompileFlags cf)
   AddGTETicks(func_ticks);
 }
 
-void CPU::NewRec::X64Compiler::CompileASMFunctions()
+u32 CPU::NewRec::X64Compiler::CompileASMFunctions(u8* code, u32 code_size)
 {
-  CodeGenerator acg(g_code_buffer.GetFreeCodeSpace(), g_code_buffer.GetFreeCodePointer());
+  CodeGenerator acg(code_size, code);
   CodeGenerator* cg = &acg;
 
   Label dispatch;
@@ -1812,7 +1819,7 @@ void CPU::NewRec::X64Compiler::CompileASMFunctions()
     cg->jmp(cg->qword[RXARG2 + RXARG1 * 2]);
   }
 
-  g_compile_block = cg->getCurr();
+  g_compile_or_revalidate_block = cg->getCurr();
   {
     cg->mov(RWARG1, cg->dword[PTR(&g_state.regs.pc)]);
     cg->call(&CompileOrRevalidateBlock);
@@ -1839,12 +1846,12 @@ void CPU::NewRec::X64Compiler::CompileASMFunctions()
     cg->ret();
   }
 
-  g_code_buffer.CommitCode(static_cast<u32>(cg->getSize()));
+  return static_cast<u32>(cg->getSize());
 }
 
-void CPU::NewRec::CompileASMFunctions()
+u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
 {
-  X64Compiler::CompileASMFunctions();
+  return X64Compiler::CompileASMFunctions(code, code_size);
 }
 
 u32 CPU::NewRec::EmitJump(void* code, const void* dst)

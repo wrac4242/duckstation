@@ -185,11 +185,11 @@ protected:
 
   virtual const void* GetCurrentCodePointer() = 0;
 
-  virtual void Reset(Block* block);
+  virtual void Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer, u32 far_code_space);
   virtual void BeginBlock();
   virtual void EndBlock(const std::optional<u32>& newpc) = 0;
   virtual void EndBlockWithException(Exception excode) = 0;
-  virtual std::pair<const void*, u32> EndCompile() = 0;
+  virtual const void* EndCompile(u32* code_size, u32* far_code_size) = 0;
 
   ALWAYS_INLINE bool IsHostRegAllocated(u32 r) const { return (m_host_regs[r].flags & HR_ALLOCATED) != 0; }
   static const char* GetReadWriteModeString(u32 flags);
