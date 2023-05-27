@@ -446,6 +446,9 @@ bool CPU::NewRec::Initialize()
 
 void CPU::NewRec::Shutdown()
 {
+  if (!s_lut_initialized)
+    return;
+
   ClearBlocks();
 }
 

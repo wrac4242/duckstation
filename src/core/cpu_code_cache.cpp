@@ -264,10 +264,12 @@ void Initialize()
       CompileDispatcher();
       ResetFastMap();
     }
+    else if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
+    {
+      CPU::NewRec::Initialize();
+    }
   }
 #endif
-
-  CPU::NewRec::Initialize();
 }
 
 void ClearState()
