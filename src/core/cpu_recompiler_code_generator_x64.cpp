@@ -3073,7 +3073,7 @@ CodeCache::DispatcherFunction CodeGenerator::CompileDispatcher()
 
   // time to lookup the block
   // eax <- pc
-  m_emit->mov(m_emit->eax, m_emit->dword[m_emit->rbp + offsetof(State, regs.pc)]);
+  m_emit->mov(m_emit->eax, m_emit->dword[m_emit->rbp + offsetof(State, pc)]);
 
   // rcx <- s_fast_map[pc >> 16]
   EmitLoadGlobalAddress(Xbyak::Operand::RBX, CodeCache::GetFastMapPointer());

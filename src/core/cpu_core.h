@@ -56,7 +56,9 @@ struct State
 
   Registers regs = {};
   Cop0Registers cop0_regs = {};
-  Instruction next_instruction = {};
+
+  u32 pc;  // at execution time: the address of the next instruction to execute (already fetched)
+  u32 npc; // at execution time: the address of the next instruction to fetch
 
   // address of the instruction currently being executed
   Instruction current_instruction = {};
@@ -73,6 +75,7 @@ struct State
   u32 load_delay_value = 0;
   u32 next_load_delay_value = 0;
 
+  Instruction next_instruction = {};
   CacheControl cache_control{0};
 
   // GTE registers are stored here so we can access them on ARM with a single instruction

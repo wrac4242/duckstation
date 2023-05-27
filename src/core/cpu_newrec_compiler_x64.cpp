@@ -275,7 +275,7 @@ void CPU::NewRec::X64Compiler::EndBlock(const std::optional<u32>& newpc)
   if (newpc.has_value())
   {
     if (m_dirty_pc || m_compiler_pc != newpc)
-      cg->mov(cg->dword[PTR(&g_state.regs.pc)], newpc.value());
+      cg->mov(cg->dword[PTR(&g_state.pc)], newpc.value());
   }
   m_dirty_pc = false;
 
@@ -537,7 +537,7 @@ void CPU::NewRec::X64Compiler::Flush(u32 flags)
 
   if (flags & FLUSH_PC && m_dirty_pc)
   {
-    cg->mov(cg->dword[PTR(&g_state.regs.pc)], m_compiler_pc);
+    cg->mov(cg->dword[PTR(&g_state.pc)], m_compiler_pc);
     m_dirty_pc = false;
   }
 
@@ -552,15 +552,11 @@ void CPU::NewRec::X64Compiler::Flush(u32 flags)
   {
     // This sucks :(
     // TODO: make it a function?
-    Label no_load_delay;
     cg->movzx(RWARG1, cg->byte[PTR(&g_state.load_delay_reg)]);
-    cg->cmp(RWARG1, static_cast<u8>(Reg::count));
-    cg->je(no_load_delay);
     cg->mov(RWARG2, cg->dword[PTR(&g_state.load_delay_value)]);
     cg->lea(RXARG3, cg->dword[PTR(&g_state.regs.r[0])]);
     cg->mov(cg->dword[RXARG3 + RXARG1 * 4], RWARG2);
     cg->mov(cg->byte[PTR(&g_state.load_delay_reg)], static_cast<u8>(Reg::count));
-    cg->L(no_load_delay);
     m_load_delay_dirty = false;
   }
 
@@ -664,7 +660,7 @@ void CPU::NewRec::X64Compiler::Compile_jr(CompileFlags cf)
   const Reg32 pcreg = cf.valid_host_s ? CFGetRegS(cf) : RWARG1;
   CheckBranchTarget(pcreg);
 
-  cg->mov(cg->dword[PTR(&g_state.regs.pc)], pcreg);
+  cg->mov(cg->dword[PTR(&g_state.pc)], pcreg);
 
   CompileBranchDelaySlot(false);
   EndBlock(std::nullopt);
@@ -681,7 +677,7 @@ void CPU::NewRec::X64Compiler::Compile_jalr(CompileFlags cf)
     SetConstantReg(MipsD(), GetBranchReturnAddress(cf));
 
   CheckBranchTarget(pcreg);
-  cg->mov(cg->dword[PTR(&g_state.regs.pc)], pcreg);
+  cg->mov(cg->dword[PTR(&g_state.pc)], pcreg);
 
   CompileBranchDelaySlot(false);
   EndBlock(std::nullopt);
@@ -2110,7 +2106,7 @@ u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
     cg->L(dispatch);
 
     // rcx <- s_fast_map[pc >> 16]
-    cg->mov(RWARG1, cg->dword[PTR(&g_state.regs.pc)]);
+    cg->mov(RWARG1, cg->dword[PTR(&g_state.pc)]);
     cg->lea(RXARG2, cg->dword[PTR(g_fast_map.data())]);
     cg->mov(RWARG3, RWARG1);
     cg->shr(RWARG3, 16);
@@ -2122,7 +2118,7 @@ u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
 
   g_compile_or_revalidate_block = cg->getCurr();
   {
-    cg->mov(RWARG1, cg->dword[PTR(&g_state.regs.pc)]);
+    cg->mov(RWARG1, cg->dword[PTR(&g_state.pc)]);
     cg->call(&CompileOrRevalidateBlock);
     cg->jmp(dispatch);
   }

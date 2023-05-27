@@ -1160,7 +1160,7 @@ Value CodeGenerator::GetCurrentInstructionPC(u32 offset /* = 0 */)
 void CodeGenerator::WriteNewPC(const Value& value, bool commit)
 {
   // TODO: This _could_ be moved into the register cache, but would it gain anything?
-  EmitStoreGuestRegister(Reg::pc, value);
+  EmitStoreCPUStructField(offsetof(CPU::State, pc), value);
   if (commit)
   {
     m_pc_valid = value.IsConstant();

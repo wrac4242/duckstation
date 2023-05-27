@@ -390,7 +390,7 @@ template<PGXPMode pgxp_mode>
   }
 
   // in case we switch to interpreter...
-  g_state.regs.npc = g_state.regs.pc;
+  g_state.npc = g_state.pc;
 }
 
 #ifdef WITH_RECOMPILER
@@ -432,7 +432,7 @@ static void ExecuteRecompiler()
       LogCurrentState();
 #endif
 
-      const u32 pc = g_state.regs.pc;
+      const u32 pc = g_state.pc;
       s_single_block_asm_dispatcher(s_fast_map[pc >> 16][pc >> 2]);
     }
   }
@@ -442,7 +442,7 @@ static void ExecuteRecompiler()
 
   // in case we switch to interpreter...
   // TODO: fixme
-  g_state.regs.npc = g_state.regs.pc;
+  g_state.npc = g_state.pc;
 }
 
 [[noreturn]] void Execute()
@@ -553,7 +553,7 @@ void LogCurrentState()
                       "t1=%08X t2=%08X t3=%08X t4=%08X t5=%08X t6=%08X t7=%08X s0=%08X s1=%08X s2=%08X s3=%08X s4=%08X "
                       "s5=%08X s6=%08X s7=%08X t8=%08X t9=%08X k0=%08X k1=%08X gp=%08X sp=%08X fp=%08X ra=%08X ldr=%s "
                       "ldv=%08X\n",
-                      TimingEvents::GetGlobalTickCounter() + GetPendingTicks(), regs.pc, regs.zero, regs.at, regs.v0,
+                      TimingEvents::GetGlobalTickCounter() + GetPendingTicks(), g_state.pc, regs.zero, regs.at, regs.v0,
                       regs.v1, regs.a0, regs.a1, regs.a2, regs.a3, regs.t0, regs.t1, regs.t2, regs.t3, regs.t4, regs.t5,
                       regs.t6, regs.t7, regs.s0, regs.s1, regs.s2, regs.s3, regs.s4, regs.s5, regs.s6, regs.s7, regs.t8,
                       regs.t9, regs.k0, regs.k1, regs.gp, regs.sp, regs.fp, regs.ra,
@@ -564,7 +564,7 @@ void LogCurrentState()
 CodeBlockKey GetNextBlockKey()
 {
   CodeBlockKey key = {};
-  key.SetPC(g_state.regs.pc);
+  key.SetPC(g_state.pc);
   key.user_mode = InUserMode();
   return key;
 }
@@ -876,7 +876,7 @@ void FastCompileBlockFunction()
 
 void InvalidCodeFunction()
 {
-  Log_ErrorPrintf("Trying to execute invalid code at 0x%08X", g_state.regs.pc);
+  Log_ErrorPrintf("Trying to execute invalid code at 0x%08X", g_state.pc);
   if (g_settings.gpu_pgxp_enable)
   {
     if (g_settings.gpu_pgxp_cpu)

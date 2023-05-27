@@ -2333,7 +2333,7 @@ CodeCache::DispatcherFunction CodeGenerator::CompileDispatcher()
 
   // time to lookup the block
   // w8 <- pc
-  m_emit->ldr(a64::w8, a64::MemOperand(GetHostReg64(RCPUPTR), offsetof(State, regs.pc)));
+  m_emit->ldr(a64::w8, a64::MemOperand(GetHostReg64(RCPUPTR), offsetof(State, pc)));
 
   // x9 <- s_fast_map[pc >> 16]
   EmitLoadGlobalAddress(10, CodeCache::GetFastMapPointer());

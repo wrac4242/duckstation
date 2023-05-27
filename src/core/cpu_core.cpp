@@ -145,7 +145,9 @@ bool DoState(StateWrapper& sw)
 {
   sw.Do(&g_state.pending_ticks);
   sw.Do(&g_state.downcount);
-  sw.DoArray(g_state.regs.r, countof(g_state.regs.r));
+  sw.DoArray(g_state.regs.r, static_cast<u32>(Reg::count));
+  sw.Do(&g_state.pc);
+  sw.Do(&g_state.npc);
   sw.Do(&g_state.cop0_regs.BPC);
   sw.Do(&g_state.cop0_regs.BDA);
   sw.Do(&g_state.cop0_regs.TAR);
@@ -174,6 +176,14 @@ bool DoState(StateWrapper& sw)
   sw.Do(&g_state.load_delay_value);
   sw.Do(&g_state.next_load_delay_reg);
   sw.Do(&g_state.next_load_delay_value);
+
+  // Compatibility with old states.
+  if (sw.GetVersion() < 59)
+  {
+    g_state.load_delay_reg = static_cast<Reg>(std::min(static_cast<u8>(g_state.load_delay_reg), static_cast<u8>(Reg::count)));
+    g_state.next_load_delay_reg = static_cast<Reg>(std::min(static_cast<u8>(g_state.load_delay_reg), static_cast<u8>(Reg::count)));
+  }
+
   sw.Do(&g_state.cache_control.bits);
   sw.DoBytes(g_state.dcache.data(), g_state.dcache.size());
 
@@ -211,7 +221,7 @@ void UpdateFastmemBase()
 ALWAYS_INLINE_RELEASE void SetPC(u32 new_pc)
 {
   DebugAssert(Common::IsAlignedPow2(new_pc, 4));
-  g_state.regs.npc = new_pc;
+  g_state.npc = new_pc;
   FlushPipeline();
 }
 
@@ -225,7 +235,7 @@ ALWAYS_INLINE_RELEASE void Branch(u32 target)
     return;
   }
 
-  g_state.regs.npc = target;
+  g_state.npc = target;
   g_state.branch_was_taken = true;
 }
 
@@ -265,14 +275,14 @@ ALWAYS_INLINE_RELEASE static void RaiseException(u32 CAUSE_bits, u32 EPC, u32 ve
     // TAR is set to the address which was being fetched in this instruction, or the next instruction to execute if the
     // exception hadn't occurred in the delay slot.
     g_state.cop0_regs.EPC -= UINT32_C(4);
-    g_state.cop0_regs.TAR = g_state.regs.pc;
+    g_state.cop0_regs.TAR = g_state.pc;
   }
 
   // current -> previous, switch to kernel mode and disable interrupts
   g_state.cop0_regs.sr.mode_bits <<= 2;
 
   // flush the pipeline - we don't want to execute the previously fetched instruction
-  g_state.regs.npc = vector;
+  g_state.npc = vector;
   g_state.exception_raised = true;
   FlushPipeline();
 }
@@ -307,7 +317,7 @@ void RaiseBreakException(u32 CAUSE_bits, u32 EPC, u32 instruction_bits)
   if (PCDrv::HandleSyscall(instruction_bits, g_state.regs))
   {
     // immediately return
-    g_state.regs.npc = EPC + 4;
+    g_state.npc = EPC + 4;
     FlushPipeline();
     return;
   }
@@ -330,9 +340,7 @@ void ClearExternalInterrupt(u8 bit)
 ALWAYS_INLINE_RELEASE static void UpdateLoadDelay()
 {
   // the old value is needed in case the delay slot instruction overwrites the same register
-  if (g_state.load_delay_reg != Reg::count)
-    g_state.regs.r[static_cast<u8>(g_state.load_delay_reg)] = g_state.load_delay_value;
-
+  g_state.regs.r[static_cast<u8>(g_state.load_delay_reg)] = g_state.load_delay_value;
   g_state.load_delay_reg = g_state.next_load_delay_reg;
   g_state.load_delay_value = g_state.next_load_delay_value;
   g_state.next_load_delay_reg = Reg::count;
@@ -342,16 +350,13 @@ ALWAYS_INLINE_RELEASE static void FlushPipeline()
 {
   // loads are flushed
   g_state.next_load_delay_reg = Reg::count;
-  if (g_state.load_delay_reg != Reg::count)
-  {
-    g_state.regs.r[static_cast<u8>(g_state.load_delay_reg)] = g_state.load_delay_value;
-    g_state.load_delay_reg = Reg::count;
-  }
+  g_state.regs.r[static_cast<u8>(g_state.load_delay_reg)] = g_state.load_delay_value;
+  g_state.load_delay_reg = Reg::count;
 
   // not in a branch delay slot
   g_state.branch_was_taken = false;
   g_state.next_instruction_is_branch_delay_slot = false;
-  g_state.current_instruction_pc = g_state.regs.pc;
+  g_state.current_instruction_pc = g_state.pc;
 
   // prefetch the next instruction
   FetchInstruction();
@@ -648,8 +653,8 @@ const std::array<DebuggerRegisterListEntry, NUM_DEBUGGER_REGISTER_LIST_ENTRIES> 
    {"ra", &CPU::g_state.regs.ra},
    {"hi", &CPU::g_state.regs.hi},
    {"lo", &CPU::g_state.regs.lo},
-   {"pc", &CPU::g_state.regs.pc},
-   {"npc", &CPU::g_state.regs.npc},
+   {"pc", &CPU::g_state.pc},
+   {"npc", &CPU::g_state.npc},
 
    {"COP0_SR", &CPU::g_state.cop0_regs.sr.bits},
    {"COP0_CAUSE", &CPU::g_state.cop0_regs.cause.bits},
@@ -1110,7 +1115,7 @@ restart_instruction:
         {
           g_state.next_instruction_is_branch_delay_slot = true;
           const u32 target = ReadReg(inst.r.rs);
-          WriteReg(inst.r.rd, g_state.regs.npc);
+          WriteReg(inst.r.rd, g_state.npc);
           Branch(target);
         }
         break;
@@ -1453,15 +1458,15 @@ restart_instruction:
     case InstructionOp::j:
     {
       g_state.next_instruction_is_branch_delay_slot = true;
-      Branch((g_state.regs.pc & UINT32_C(0xF0000000)) | (inst.j.target << 2));
+      Branch((g_state.pc & UINT32_C(0xF0000000)) | (inst.j.target << 2));
     }
     break;
 
     case InstructionOp::jal:
     {
-      WriteReg(Reg::ra, g_state.regs.npc);
+      WriteReg(Reg::ra, g_state.npc);
       g_state.next_instruction_is_branch_delay_slot = true;
-      Branch((g_state.regs.pc & UINT32_C(0xF0000000)) | (inst.j.target << 2));
+      Branch((g_state.pc & UINT32_C(0xF0000000)) | (inst.j.target << 2));
     }
     break;
 
@@ -1471,7 +1476,7 @@ restart_instruction:
       g_state.next_instruction_is_branch_delay_slot = true;
       const bool branch = (ReadReg(inst.i.rs) == ReadReg(inst.i.rt));
       if (branch)
-        Branch(g_state.regs.pc + (inst.i.imm_sext32() << 2));
+        Branch(g_state.pc + (inst.i.imm_sext32() << 2));
     }
     break;
 
@@ -1480,7 +1485,7 @@ restart_instruction:
       g_state.next_instruction_is_branch_delay_slot = true;
       const bool branch = (ReadReg(inst.i.rs) != ReadReg(inst.i.rt));
       if (branch)
-        Branch(g_state.regs.pc + (inst.i.imm_sext32() << 2));
+        Branch(g_state.pc + (inst.i.imm_sext32() << 2));
     }
     break;
 
@@ -1489,7 +1494,7 @@ restart_instruction:
       g_state.next_instruction_is_branch_delay_slot = true;
       const bool branch = (static_cast<s32>(ReadReg(inst.i.rs)) > 0);
       if (branch)
-        Branch(g_state.regs.pc + (inst.i.imm_sext32() << 2));
+        Branch(g_state.pc + (inst.i.imm_sext32() << 2));
     }
     break;
 
@@ -1498,7 +1503,7 @@ restart_instruction:
       g_state.next_instruction_is_branch_delay_slot = true;
       const bool branch = (static_cast<s32>(ReadReg(inst.i.rs)) <= 0);
       if (branch)
-        Branch(g_state.regs.pc + (inst.i.imm_sext32() << 2));
+        Branch(g_state.pc + (inst.i.imm_sext32() << 2));
     }
     break;
 
@@ -1514,10 +1519,10 @@ restart_instruction:
       // register is still linked even if the branch isn't taken
       const bool link = (rt & u8(0x1E)) == u8(0x10);
       if (link)
-        WriteReg(Reg::ra, g_state.regs.npc);
+        WriteReg(Reg::ra, g_state.npc);
 
       if (branch)
-        Branch(g_state.regs.pc + (inst.i.imm_sext32() << 2));
+        Branch(g_state.pc + (inst.i.imm_sext32() << 2));
     }
     break;
 
@@ -1733,7 +1738,7 @@ void DispatchInterrupt()
 {
   // If the instruction we're about to execute is a GTE instruction, delay dispatching the interrupt until the next
   // instruction. For some reason, if we don't do this, we end up with incorrectly sorted polygons and flickering..
-  SafeReadInstruction(g_state.regs.pc, &g_state.next_instruction.bits);
+  SafeReadInstruction(g_state.pc, &g_state.next_instruction.bits);
   if (g_state.next_instruction.op == InstructionOp::cop2 && !g_state.next_instruction.cop.IsCommonInstruction())
   {
     StallUntilGTEComplete();
@@ -1744,7 +1749,7 @@ void DispatchInterrupt()
   RaiseException(
     Cop0Registers::CAUSE::MakeValueForException(Exception::INT, g_state.next_instruction_is_branch_delay_slot,
                                                 g_state.branch_was_taken, g_state.next_instruction.cop.cop_n),
-    g_state.regs.pc);
+    g_state.pc);
 
   // Fix up downcount, the pending IRQ set it to zero.
   TimingEvents::UpdateCPUDowncount();
@@ -1873,7 +1878,7 @@ void ClearBreakpoints()
 
 bool AddStepOverBreakpoint()
 {
-  u32 bp_pc = g_state.regs.pc;
+  u32 bp_pc = g_state.pc;
 
   Instruction inst;
   if (!SafeReadInstruction(bp_pc, &inst.bits))
@@ -1884,7 +1889,7 @@ bool AddStepOverBreakpoint()
   if (!IsCallInstruction(inst))
   {
     Host::ReportFormattedDebuggerMessage(Host::TranslateString("DebuggerMessage", "0x%08X is not a call instruction."),
-                                         g_state.regs.pc);
+                                         g_state.pc);
     return false;
   }
 
@@ -1894,7 +1899,7 @@ bool AddStepOverBreakpoint()
   if (IsBranchInstruction(inst))
   {
     Host::ReportFormattedDebuggerMessage(
-      Host::TranslateString("DebuggerMessage", "Can't step over double branch at 0x%08X"), g_state.regs.pc);
+      Host::TranslateString("DebuggerMessage", "Can't step over double branch at 0x%08X"), g_state.pc);
     return false;
   }
 
@@ -1909,7 +1914,7 @@ bool AddStepOverBreakpoint()
 bool AddStepOutBreakpoint(u32 max_instructions_to_search)
 {
   // find the branch-to-ra instruction.
-  u32 ret_pc = g_state.regs.pc;
+  u32 ret_pc = g_state.pc;
   for (u32 i = 0; i < max_instructions_to_search; i++)
   {
     ret_pc += sizeof(Instruction);
@@ -1933,14 +1938,14 @@ bool AddStepOutBreakpoint(u32 max_instructions_to_search)
 
   Host::ReportFormattedDebuggerMessage(
     Host::TranslateString("DebuggerMessage", "No return instruction found after %u instructions for step-out at %08X."),
-    max_instructions_to_search, g_state.regs.pc);
+    max_instructions_to_search, g_state.pc);
 
   return false;
 }
 
 ALWAYS_INLINE_RELEASE static bool BreakpointCheck()
 {
-  const u32 pc = g_state.regs.pc;
+  const u32 pc = g_state.pc;
 
   // single step - we want to break out after this instruction, so set a pending exit
   // the bp check happens just before execution, so this is fine
@@ -2037,7 +2042,7 @@ template<PGXPMode pgxp_mode, bool debug>
 
       // now executing the instruction we previously fetched
       g_state.current_instruction.bits = g_state.next_instruction.bits;
-      g_state.current_instruction_pc = g_state.regs.pc;
+      g_state.current_instruction_pc = g_state.pc;
       g_state.current_instruction_in_branch_delay_slot = g_state.next_instruction_is_branch_delay_slot;
       g_state.current_instruction_was_branch_taken = g_state.branch_was_taken;
       g_state.next_instruction_is_branch_delay_slot = false;
@@ -2129,7 +2134,7 @@ void SingleStep()
 {
   if (fastjmp_set(&s_jmp_buf) == 0)
     ExecuteDebug();
-  Host::ReportFormattedDebuggerMessage("Stepped to 0x%08X.", g_state.regs.pc);
+  Host::ReportFormattedDebuggerMessage("Stepped to 0x%08X.", g_state.pc);
 }
 
 namespace CodeCache {
@@ -2138,8 +2143,8 @@ template<PGXPMode pgxp_mode>
 void InterpretCachedBlock(const CodeBlock& block)
 {
   // set up the state so we've already fetched the instruction
-  DebugAssert(g_state.regs.pc == block.GetPC());
-  g_state.regs.npc = block.GetPC() + 4;
+  DebugAssert(g_state.pc == block.GetPC());
+  g_state.npc = block.GetPC() + 4;
 
   for (const CodeBlockInstruction& cbi : block.instructions)
   {
@@ -2154,8 +2159,8 @@ void InterpretCachedBlock(const CodeBlock& block)
     g_state.exception_raised = false;
 
     // update pc
-    g_state.regs.pc = g_state.regs.npc;
-    g_state.regs.npc += 4;
+    g_state.pc = g_state.npc;
+    g_state.npc += 4;
 
     // execute the instruction we previously fetched
     ExecuteInstruction<pgxp_mode, false>();
@@ -2178,7 +2183,7 @@ template void InterpretCachedBlock<PGXPMode::CPU>(const CodeBlock& block);
 template<PGXPMode pgxp_mode>
 void InterpretUncachedBlock()
 {
-  g_state.regs.npc = g_state.regs.pc;
+  g_state.npc = g_state.pc;
   if (!FetchInstructionForInterpreterFallback())
     return;
 
@@ -2191,7 +2196,7 @@ void InterpretUncachedBlock()
 
     // now executing the instruction we previously fetched
     g_state.current_instruction.bits = g_state.next_instruction.bits;
-    g_state.current_instruction_pc = g_state.regs.pc;
+    g_state.current_instruction_pc = g_state.pc;
     g_state.current_instruction_in_branch_delay_slot = g_state.next_instruction_is_branch_delay_slot;
     g_state.current_instruction_was_branch_taken = g_state.branch_was_taken;
     g_state.next_instruction_is_branch_delay_slot = false;
@@ -2207,7 +2212,7 @@ void InterpretUncachedBlock()
     }
     else
     {
-      g_state.regs.pc = g_state.regs.npc;
+      g_state.pc = g_state.npc;
     }
 
     // execute the instruction we previously fetched
