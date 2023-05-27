@@ -875,9 +875,13 @@ void CPU::NewRec::Compiler::DeleteMIPSReg(Reg reg, bool flush)
 void CPU::NewRec::Compiler::Flush(u32 flags)
 {
   // TODO: Flush unneeded caller-saved regs (backup/replace calle-saved needed with caller-saved)
-  if (flags & (FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_FREE_ALL_REGISTERS))
+  if (flags &
+      (FLUSH_FREE_UNNEEDED_CALLER_SAVED_REGISTERS | FLUSH_FREE_CALLER_SAVED_REGISTERS | FLUSH_FREE_ALL_REGISTERS))
   {
-    const u32 req_mask = (flags & FLUSH_FREE_ALL_REGISTERS) ? HR_ALLOCATED : (HR_ALLOCATED | HR_CALLEE_SAVED);
+    const u32 req_mask = (flags & FLUSH_FREE_ALL_REGISTERS) ?
+                           HR_ALLOCATED :
+                           ((flags & FLUSH_FREE_CALLER_SAVED_REGISTERS) ? (HR_ALLOCATED | HR_CALLEE_SAVED) :
+                                                                          (HR_ALLOCATED | HR_CALLEE_SAVED | HR_NEEDED));
     constexpr u32 req_flags = HR_ALLOCATED;
 
     for (u32 i = 0; i < NUM_HOST_REGS; i++)
