@@ -251,12 +251,12 @@ void CPU::NewRec::X64Compiler::SwitchToNearCode(bool emit_jump, void (Xbyak::Cod
 void CPU::NewRec::X64Compiler::BeginBlock()
 {
   Compiler::BeginBlock();
-#if 0
+#if 1
   cg->call(&CPU::CodeCache::LogCurrentState);
 #endif
 
 #if 0
-  if (m_block->pc == 0xBFC0703C)
+  if (m_block->pc == 0xBFC06F0C)
   {
     //__debugbreak();
     cg->db(0xcc);
@@ -378,6 +378,13 @@ u32 CPU::NewRec::X64Compiler::GetHostInstructionCount(const void* start, u32 siz
 #else
   return 0;
 #endif
+}
+
+const char* CPU::NewRec::X64Compiler::GetHostRegName(u32 reg) const
+{
+  static constexpr std::array<const char*, 16> reg64_names = {
+    {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"}};
+  return (reg < reg64_names.size()) ? reg64_names[reg] : "UNKNOWN";
 }
 
 void CPU::NewRec::X64Compiler::LoadHostRegWithConstant(u32 reg, u32 val)
@@ -1117,7 +1124,7 @@ void CPU::NewRec::X64Compiler::Compile_dst_op(
 
 void CPU::NewRec::X64Compiler::Compile_add(CompileFlags cf)
 {
-  Compile_dst_op(cf, &CodeGenerator::add, &CodeGenerator::add, true, true);
+  Compile_dst_op(cf, &CodeGenerator::add, &CodeGenerator::add, true, g_settings.cpu_recompiler_memory_exceptions);
 }
 
 void CPU::NewRec::X64Compiler::Compile_addu(CompileFlags cf)
@@ -1127,7 +1134,7 @@ void CPU::NewRec::X64Compiler::Compile_addu(CompileFlags cf)
 
 void CPU::NewRec::X64Compiler::Compile_sub(CompileFlags cf)
 {
-  Compile_dst_op(cf, &CodeGenerator::sub, &CodeGenerator::sub, false, true);
+  Compile_dst_op(cf, &CodeGenerator::sub, &CodeGenerator::sub, false, g_settings.cpu_recompiler_memory_exceptions);
 }
 
 void CPU::NewRec::X64Compiler::Compile_subu(CompileFlags cf)
@@ -1691,11 +1698,6 @@ void CPU::NewRec::X64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize siz
   cg->and_(cg->ecx, 3);
   cg->shl(cg->ecx, 3); // *8
 
-  // TODO for other arch: reverse subtract
-  DebugAssert(RWARG3 != cg->ecx);
-  cg->mov(RWARG3, 24);
-  cg->sub(RWARG3, cg->ecx);
-
   if (inst->op == InstructionOp::swl)
   {
     // const u32 mem_mask = UINT32_C(0xFFFFFF00) << shift;
@@ -1716,6 +1718,7 @@ void CPU::NewRec::X64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize siz
     // new_value = (RWRET & mem_mask) | (value << shift);
     cg->shl(value, cg->cl);
 
+    DebugAssert(RWARG3 != cg->ecx);
     cg->mov(RWARG3, 24);
     cg->sub(RWARG3, cg->ecx);
     cg->mov(cg->ecx, RWARG3);
@@ -1778,6 +1781,7 @@ void CPU::NewRec::X64Compiler::Compile_mtc0(CompileFlags cf)
     return;
   }
 
+  // TODO: const apply mask
   const Reg32 rt = cf.valid_host_t ? CFGetRegT(cf) : RWARG1;
   const u32 constant_value = cf.const_t ? GetConstantRegU32(cf.MipsT()) : 0;
   if (mask == 0)
@@ -1800,10 +1804,10 @@ void CPU::NewRec::X64Compiler::Compile_mtc0(CompileFlags cf)
     if (needs_bit_test)
     {
       cg->mov(changed_bits, RWARG2);
-      cg->xor_(changed_bits, rt);
+      cg->xor_(changed_bits, RWARG1);
     }
     cg->and_(RWARG2, ~mask);
-    cg->or_(RWARG2, rt);
+    cg->or_(RWARG2, RWARG1);
     cg->mov(cg->dword[PTR(ptr)], RWARG2);
   }
   else
@@ -1812,7 +1816,7 @@ void CPU::NewRec::X64Compiler::Compile_mtc0(CompileFlags cf)
     if (needs_bit_test)
     {
       cg->mov(changed_bits, RWARG2);
-      cg->xor_(changed_bits, constant_value);
+      cg->xor_(changed_bits, constant_value & mask);
     }
     cg->and_(RWARG2, ~mask);
     cg->or_(RWARG2, constant_value & mask);
@@ -1825,7 +1829,6 @@ void CPU::NewRec::X64Compiler::Compile_mtc0(CompileFlags cf)
     // We could just inline the whole thing..
     Flush(FLUSH_FOR_C_CALL);
 
-    Label unchanged;
     cg->test(changed_bits, 1u << 16);
     SwitchToFarCode(true, &CodeGenerator::jnz);
     cg->push(RWARG1);
@@ -1841,8 +1844,6 @@ void CPU::NewRec::X64Compiler::Compile_mtc0(CompileFlags cf)
     cg->pop(RWARG1);
     cg->mov(RMEMBASE, cg->qword[PTR(&g_state.fastmem_base)]);
     SwitchToNearCode(true);
-
-    cg->L(unchanged);
   }
 
   if (reg == Cop0Reg::SR || reg == Cop0Reg::CAUSE)
@@ -1876,28 +1877,25 @@ void CPU::NewRec::X64Compiler::Compile_rfe(CompileFlags cf)
 
 void CPU::NewRec::X64Compiler::TestInterrupts(const Xbyak::Reg32& sr)
 {
-  // need to test for interrupts, flush everything back, since we're gonna have to do it anyway, and this isn't hot
-  Flush(FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_EXCEPTION);
-
   // if Iec == 0 then goto no_interrupt
   Label no_interrupt;
 
   cg->test(sr, 1);
-  cg->jz(no_interrupt, Xbyak::CodeGenerator::T_SHORT);
+  cg->jz(no_interrupt, CodeGenerator::T_NEAR);
 
   // sr & cause
   cg->and_(sr, cg->dword[PTR(&g_state.cop0_regs.cause.bits)]);
 
   // ((sr & cause) & 0xff00) == 0 goto no_interrupt
   cg->test(sr, 0xFF00);
-  cg->jz(no_interrupt, Xbyak::CodeGenerator::T_SHORT);
 
-  // TODO: put this in far code
+  SwitchToFarCode(true, &CodeGenerator::jnz);
   BackupHostState();
-  Flush(FLUSH_FOR_C_CALL);
+  Flush(FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_EXCEPTION | FLUSH_FOR_C_CALL);
   cg->call(reinterpret_cast<const void*>(&DispatchInterrupt));
   EndBlock(std::nullopt);
   RestoreHostState();
+  SwitchToNearCode(false);
 
   cg->L(no_interrupt);
 }
@@ -2146,7 +2144,7 @@ u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
   return static_cast<u32>(cg->getSize());
 }
 
-u32 CPU::NewRec::EmitJump(void* code, const void* dst)
+u32 CPU::NewRec::EmitJump(void* code, const void* dst, bool flush_icache)
 {
   u8* ptr = static_cast<u8*>(code);
   *(ptr++) = 0xE9; // jmp
@@ -2283,7 +2281,7 @@ u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* cod
   cg->jmp(static_cast<const u8*>(code_address) + code_size);
 
   // backpatch to a jump to the slowmem handler
-  EmitJump(code_address, cg->getCode<const void*>());
+  EmitJump(code_address, cg->getCode<const void*>(), false);
 
   // fill the rest of it with nops, if any
   DebugAssert(code_size >= BACKPATCH_JMP_SIZE);

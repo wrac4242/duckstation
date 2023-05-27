@@ -2282,10 +2282,6 @@ CodeCache::DispatcherFunction CodeGenerator::CompileDispatcher()
   a64::Label exit_dispatcher;
   m_emit->Bind(&frame_done_loop);
 
-  // if frame_done goto exit_dispatcher
-  m_emit->ldrb(a64::w8, a64::MemOperand(GetHostReg64(RCPUPTR), offsetof(State, frame_done)));
-  m_emit->tbnz(a64::w8, 0, &exit_dispatcher);
-
   // x8 <- sr
   a64::Label no_interrupt;
   m_emit->ldr(a64::w8, a64::MemOperand(GetHostReg64(RCPUPTR), offsetof(State, cop0_regs.sr.bits)));

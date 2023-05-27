@@ -5,21 +5,15 @@
 #include "cpu_newrec_compiler.h"
 #include <memory>
 
-// We need to include windows.h before xbyak does..
-#ifdef _WIN32
-#include "common/windows_headers.h"
-#endif
-
-#define XBYAK_NO_OP_NAMES 1
-#include "xbyak.h"
+#include "vixl/aarch64/assembler-aarch64.h"
 
 namespace CPU::NewRec {
 
-class X64Compiler final : public Compiler
+class AArch64Compiler final : public Compiler
 {
 public:
-  X64Compiler();
-  ~X64Compiler() override;
+  AArch64Compiler();
+  ~AArch64Compiler() override;
 
 protected:
   void DisassembleAndLog(const void* start, u32 size) override;
@@ -45,11 +39,12 @@ protected:
 
   void Compile_Fallback() override;
 
-  void CheckBranchTarget(const Xbyak::Reg32& pcreg);
+  void CheckBranchTarget(const vixl::aarch64::WRegister& pcreg);
   void Compile_jr(CompileFlags cf) override;
   void Compile_jalr(CompileFlags cf) override;
   void Compile_bxx(CompileFlags cf, BranchCondition cond) override;
 
+  void Compile_addi(CompileFlags cf, bool overflow);
   void Compile_addi(CompileFlags cf) override;
   void Compile_addiu(CompileFlags cf) override;
   void Compile_slti(CompileFlags cf, bool sign);
@@ -59,12 +54,17 @@ protected:
   void Compile_ori(CompileFlags cf) override;
   void Compile_xori(CompileFlags cf) override;
 
+  void Compile_shift(CompileFlags cf, void (vixl::aarch64::Assembler::*op)(const vixl::aarch64::Register&,
+                                                                           const vixl::aarch64::Register&, unsigned));
   void Compile_sll(CompileFlags cf) override;
   void Compile_srl(CompileFlags cf) override;
   void Compile_sra(CompileFlags cf) override;
   void Compile_variable_shift(CompileFlags cf,
-                              void (Xbyak::CodeGenerator::*op)(const Xbyak::Operand&, const Xbyak::Reg8&),
-                              void (Xbyak::CodeGenerator::*op_const)(const Xbyak::Operand&, int));
+                              void (vixl::aarch64::Assembler::*op)(const vixl::aarch64::Register&,
+                                                                   const vixl::aarch64::Register&,
+                                                                   const vixl::aarch64::Register&),
+                              void (vixl::aarch64::Assembler::*op_const)(const vixl::aarch64::Register&,
+                                                                         const vixl::aarch64::Register&, unsigned));
   void Compile_sllv(CompileFlags cf) override;
   void Compile_srlv(CompileFlags cf) override;
   void Compile_srav(CompileFlags cf) override;
@@ -73,10 +73,12 @@ protected:
   void Compile_multu(CompileFlags cf) override;
   void Compile_div(CompileFlags cf) override;
   void Compile_divu(CompileFlags cf) override;
-  void TestOverflow(const Xbyak::Reg32& result);
-  void Compile_dst_op(CompileFlags cf, void (Xbyak::CodeGenerator::*op)(const Xbyak::Operand&, const Xbyak::Operand&),
-                      void (Xbyak::CodeGenerator::*op_const)(const Xbyak::Operand&, u32), bool commutative,
-                      bool overflow);
+  void TestOverflow(const vixl::aarch64::WRegister& result);
+  void Compile_dst_op(CompileFlags cf,
+                      void (vixl::aarch64::Assembler::*op)(const vixl::aarch64::Register&,
+                                                           const vixl::aarch64::Register&,
+                                                           const vixl::aarch64::Operand&),
+                      bool commutative, bool logical, bool overflow);
   void Compile_add(CompileFlags cf) override;
   void Compile_addu(CompileFlags cf) override;
   void Compile_sub(CompileFlags cf) override;
@@ -90,11 +92,14 @@ protected:
   void Compile_sltu(CompileFlags cf) override;
 
   void FlushForLoadStore(const std::optional<VirtualMemoryAddress>& address, bool store);
-  Xbyak::Reg32 ComputeLoadStoreAddressArg(CompileFlags cf, const std::optional<VirtualMemoryAddress>& address,
-                                          const std::optional<const Xbyak::Reg32>& reg = std::nullopt);
+  vixl::aarch64::WRegister
+  ComputeLoadStoreAddressArg(CompileFlags cf, const std::optional<VirtualMemoryAddress>& address,
+                             const std::optional<const vixl::aarch64::WRegister>& reg = std::nullopt);
   template<typename RegAllocFn>
-  void GenerateLoad(const Xbyak::Reg32& addr_reg, MemoryAccessSize size, bool sign, const RegAllocFn& dst_reg_alloc);
-  void GenerateStore(const Xbyak::Reg32& addr_reg, const Xbyak::Reg32& value_reg, MemoryAccessSize size);
+  void GenerateLoad(const vixl::aarch64::WRegister& addr_reg, MemoryAccessSize size, bool sign,
+                    const RegAllocFn& dst_reg_alloc);
+  void GenerateStore(const vixl::aarch64::WRegister& addr_reg, const vixl::aarch64::WRegister& value_reg,
+                     MemoryAccessSize size);
   void Compile_lxx(CompileFlags cf, MemoryAccessSize size, bool sign,
                    const std::optional<VirtualMemoryAddress>& address) override;
   void Compile_lwx(CompileFlags cf, MemoryAccessSize size, bool sign,
@@ -108,7 +113,7 @@ protected:
   void Compile_swc2(CompileFlags cf, MemoryAccessSize size, bool sign,
                     const std::optional<VirtualMemoryAddress>& address) override;
 
-  void TestInterrupts(const Xbyak::Reg32& sr);
+  void TestInterrupts(const vixl::aarch64::WRegister& sr);
   void Compile_mtc0(CompileFlags cf) override;
   void Compile_rfe(CompileFlags cf) override;
 
@@ -117,25 +122,39 @@ protected:
   void Compile_cop2(CompileFlags cf) override;
 
 private:
-  void SwitchToFarCode(bool emit_jump, void (Xbyak::CodeGenerator::*jump_op)(const void*) = nullptr);
-  void SwitchToNearCode(bool emit_jump, void (Xbyak::CodeGenerator::*jump_op)(const void*) = nullptr);
+  void EmitMov(const vixl::aarch64::WRegister& dst, u32 val);
+  void EmitCall(const void* ptr, bool force_inline = false);
 
-  Xbyak::Address MipsPtr(Reg r) const;
-  Xbyak::Reg32 CFGetRegD(CompileFlags cf) const;
-  Xbyak::Reg32 CFGetRegS(CompileFlags cf) const;
-  Xbyak::Reg32 CFGetRegT(CompileFlags cf) const;
-  Xbyak::Reg32 CFGetRegLO(CompileFlags cf) const;
-  Xbyak::Reg32 CFGetRegHI(CompileFlags cf) const;
+  vixl::aarch64::Operand armCheckAddSubConstant(s32 val);
+  vixl::aarch64::Operand armCheckAddSubConstant(u32 val);
+  vixl::aarch64::Operand armCheckCompareConstant(s32 val);
+  vixl::aarch64::Operand armCheckLogicalConstant(u32 val);
 
-  Xbyak::Reg32 MoveSToD(CompileFlags cf);
-  Xbyak::Reg32 MoveSToT(CompileFlags cf);
-  Xbyak::Reg32 MoveTToD(CompileFlags cf);
-  void MoveSToReg(const Xbyak::Reg32& dst, CompileFlags cf);
-  void MoveTToReg(const Xbyak::Reg32& dst, CompileFlags cf);
+  void SwitchToFarCode(bool emit_jump, vixl::aarch64::Condition cond = vixl::aarch64::Condition::al);
+  void SwitchToFarCodeIfBitSet(const vixl::aarch64::Register& reg, u32 bit);
+  void SwitchToFarCodeIfRegZeroOrNonZero(const vixl::aarch64::Register& reg, bool nonzero);
+  void SwitchToNearCode(bool emit_jump, vixl::aarch64::Condition cond = vixl::aarch64::Condition::al);
 
-  std::unique_ptr<Xbyak::CodeGenerator> m_emitter;
-  std::unique_ptr<Xbyak::CodeGenerator> m_far_emitter;
-  Xbyak::CodeGenerator* cg;
+  void AssertRegOrConstS(CompileFlags cf) const;
+  void AssertRegOrConstT(CompileFlags cf) const;
+  vixl::aarch64::MemOperand MipsPtr(Reg r) const;
+  vixl::aarch64::WRegister CFGetRegD(CompileFlags cf) const;
+  vixl::aarch64::WRegister CFGetRegS(CompileFlags cf) const;
+  vixl::aarch64::WRegister CFGetRegT(CompileFlags cf) const;
+  vixl::aarch64::WRegister CFGetRegLO(CompileFlags cf) const;
+  vixl::aarch64::WRegister CFGetRegHI(CompileFlags cf) const;
+
+  void MoveSToReg(const vixl::aarch64::WRegister& dst, CompileFlags cf);
+  void MoveTToReg(const vixl::aarch64::WRegister& dst, CompileFlags cf);
+
+  std::unique_ptr<vixl::aarch64::Assembler> m_emitter;
+  std::unique_ptr<vixl::aarch64::Assembler> m_far_emitter;
+  vixl::aarch64::Assembler* armAsm;
+
+#ifdef VIXL_DEBUG
+  std::unique_ptr<vixl::CodeBufferCheckScope> m_emitter_check;
+  std::unique_ptr<vixl::CodeBufferCheckScope> m_far_emitter_check;
+#endif
 };
 
 } // namespace CPU::NewRec

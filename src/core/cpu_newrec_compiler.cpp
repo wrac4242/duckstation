@@ -18,13 +18,6 @@ CPU::NewRec::Compiler::Compiler() = default;
 
 CPU::NewRec::Compiler::~Compiler() = default;
 
-const char* CPU::NewRec::Compiler::GetHostRegName(u32 reg) const
-{
-  static constexpr std::array<const char*, 16> reg64_names = {
-    {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"}};
-  return (reg < reg64_names.size()) ? reg64_names[reg] : "UNKNOWN";
-}
-
 void CPU::NewRec::Compiler::Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer,
                                   u32 far_code_space)
 {
@@ -71,7 +64,7 @@ const void* CPU::NewRec::Compiler::CompileBlock(Block* block)
   Reset(block, buffer.GetFreeCodePointer(), buffer.GetFreeCodeSpace(), buffer.GetFreeFarCodePointer(),
         buffer.GetFreeFarCodeSpace());
 
-  Log_DebugPrintf("Block range: %08X -> %08X", block->pc, block->pc + block->size * sizeof(Instruction));
+  Log_DebugPrintf("Block range: %08X -> %08X", block->pc, block->pc + block->size * 4);
 
   BeginBlock();
 
@@ -100,14 +93,14 @@ const void* CPU::NewRec::Compiler::CompileBlock(Block* block)
 #ifdef _DEBUG
   const u32 host_instructions = GetHostInstructionCount(code, code_size);
   Log_ProfilePrintf("0x%08X: %u/%ub for %ub (%u inst), blowup: %.2fx, cache: %.2f%%/%.2f%%, ipi: %.2f", block->pc,
-                    code_size, far_code_size, block->size * sizeof(Instruction), block->size,
-                    static_cast<float>(code_size) / static_cast<float>(block->size * sizeof(Instruction)),
+                    code_size, far_code_size, block->size * 4, block->size,
+                    static_cast<float>(code_size) / static_cast<float>(block->size * 4),
                     buffer.GetUsedPct(), buffer.GetFarUsedPct(),
                     static_cast<float>(host_instructions) / static_cast<float>(block->size));
 #else
   Log_ProfilePrintf("0x%08X: %u/%ub for %ub (%u inst), blowup: %.2fx, cache: %.2f%%/%.2f%%", block->pc, code_size,
-                    far_code_size, block->size * sizeof(Instruction), block->size,
-                    static_cast<float>(code_size) / static_cast<float>(block->size * sizeof(Instruction)),
+                    far_code_size, block->size * 4, block->size,
+                    static_cast<float>(code_size) / static_cast<float>(block->size * 4),
                     buffer.GetUsedPct(), buffer.GetFarUsedPct());
 #endif
 
@@ -330,7 +323,7 @@ bool CPU::NewRec::Compiler::TrySwapDelaySlot(Reg rs, Reg rt, Reg rd)
   }
 
   // can't swap when the branch is the first instruction because of bloody load delays
-  if (EMULATE_LOAD_DELAYS && m_block->pc == m_current_instruction_pc || m_load_delay_dirty ||
+  if ((EMULATE_LOAD_DELAYS && m_block->pc == m_current_instruction_pc) || m_load_delay_dirty ||
       (HasLoadDelay() && (m_load_delay_register == rs || m_load_delay_register == rt || m_load_delay_register == rd)))
   {
     goto is_unsafe;
@@ -715,6 +708,11 @@ std::optional<u32> CPU::NewRec::Compiler::CheckHostReg(u32 flags, HostRegAllocTy
   return std::nullopt;
 }
 
+u32 CPU::NewRec::Compiler::AllocateTempHostReg(u32 flags)
+{
+  return AllocateHostReg(flags, HR_TYPE_TEMP);
+}
+
 void CPU::NewRec::Compiler::FlushHostReg(u32 reg)
 {
   HostRegAlloc& ra = m_host_regs[reg];
@@ -812,7 +810,7 @@ void CPU::NewRec::Compiler::RenameHostReg(u32 reg, u32 new_flags, HostRegAllocTy
   }
   else
   {
-    Log_DebugPrintf("Renaming host reg %s to temp");
+    Log_DebugPrintf("Renaming host reg %s to temp", GetHostRegName(reg));
   }
 
   HostRegAlloc& ra = m_host_regs[reg];
@@ -1185,6 +1183,9 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   // TODO: Rename S to D for sll 0, addi 0, etc.
   // TODO: Prefer memory operands when load delay is dirty, since we're going to invalidate immediately after the first
   // instruction..
+  // TODO: andi with zero -> zero const
+  // TODO: load constant so it can be flushed if it's not overwritten later
+  // TODO: inline PGXP ops.
 
   bool allow_constant = static_cast<bool>(const_func);
   Reg rs = inst->r.rs.GetValue();

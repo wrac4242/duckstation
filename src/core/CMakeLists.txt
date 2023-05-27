@@ -108,6 +108,11 @@ add_library(core
 )
 
 set(RECOMPILER_SRCS
+    cpu_newrec.cpp
+    cpu_newrec.h
+    cpu_newrec_compiler.cpp
+    cpu_newrec_compiler.h
+    cpu_newrec_private.h
     cpu_recompiler_code_generator.cpp
     cpu_recompiler_code_generator.h
     cpu_recompiler_code_generator_generic.cpp
@@ -155,6 +160,8 @@ if(${CPU_ARCH} STREQUAL "x64")
   target_include_directories(core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../../dep/xbyak/xbyak")
   target_compile_definitions(core PUBLIC "WITH_RECOMPILER=1" "WITH_MMAP_FASTMEM=1")
   target_sources(core PRIVATE ${RECOMPILER_SRCS}
+    cpu_newrec_compiler_x64.cpp
+    cpu_newrec_compiler_x64.h
     cpu_recompiler_code_generator_x64.cpp
   )
   message("Building x64 recompiler")
@@ -172,6 +179,8 @@ elseif(${CPU_ARCH} STREQUAL "aarch64")
     target_compile_definitions(core PUBLIC "WITH_MMAP_FASTMEM=1")
   endif()
   target_sources(core PRIVATE ${RECOMPILER_SRCS}
+    cpu_newrec_compiler_aarch64.cpp
+    cpu_newrec_compiler_aarch64.h
     cpu_recompiler_code_generator_aarch64.cpp
   )
   target_link_libraries(core PUBLIC vixl)

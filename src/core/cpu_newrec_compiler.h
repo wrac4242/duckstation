@@ -14,10 +14,18 @@
 
 namespace CPU::NewRec {
 
-static constexpr u32 NUM_HOST_REGS = 16;
-static constexpr bool HAS_MEMORY_OPERANDS = true;
+// Global options
 static constexpr bool EMULATE_LOAD_DELAYS = true;
 static constexpr bool SWAP_BRANCH_DELAY_SLOTS = true;
+
+// Arch-specific options
+#if defined(CPU_X64)
+static constexpr u32 NUM_HOST_REGS = 16;
+static constexpr bool HAS_MEMORY_OPERANDS = true;
+#elif defined(CPU_AARCH64)
+static constexpr u32 NUM_HOST_REGS = 32;
+static constexpr bool HAS_MEMORY_OPERANDS = false;
+#endif
 
 class Compiler
 {
@@ -107,8 +115,6 @@ protected:
     TF_CAN_OVERFLOW = (1 << 10),
 
     // TF_NORENAME = // TODO
-    // TF_FORCEREGS
-    // TF_FORCEREGT
     TF_LOAD_DELAY = (1 << 11),
     TF_GTE_STALL = (1 << 12),
 
@@ -194,10 +200,11 @@ protected:
 
   ALWAYS_INLINE bool IsHostRegAllocated(u32 r) const { return (m_host_regs[r].flags & HR_ALLOCATED) != 0; }
   static const char* GetReadWriteModeString(u32 flags);
-  virtual const char* GetHostRegName(u32 reg) const;
+  virtual const char* GetHostRegName(u32 reg) const = 0;
   std::optional<u32> GetFreeHostReg(u32 flags);
   u32 AllocateHostReg(u32 flags, HostRegAllocType type = HR_TYPE_TEMP, Reg reg = Reg::count);
   std::optional<u32> CheckHostReg(u32 flags, HostRegAllocType type = HR_TYPE_TEMP, Reg reg = Reg::count);
+  u32 AllocateTempHostReg(u32 flags = 0);
   void FlushHostReg(u32 reg);
   void FreeHostReg(u32 reg);
   void ClearHostReg(u32 reg);

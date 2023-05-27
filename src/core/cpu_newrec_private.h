@@ -4,6 +4,7 @@
 #pragma once
 #include "bus.h"
 #include "cpu_core_private.h"
+#include "cpu_newrec.h"
 #include "cpu_types.h"
 #include "types.h"
 #include "util/jit_code_buffer.h"
@@ -61,7 +62,7 @@ struct LoadstoreBackpatchInfo
 };
 static_assert(sizeof(LoadstoreBackpatchInfo) == 16);
 
-static constexpr bool BlockInRAM(VirtualMemoryAddress pc)
+static inline bool BlockInRAM(VirtualMemoryAddress pc)
 {
   return VirtualAddressToPhysical(pc) < Bus::g_ram_size;
 }
@@ -73,7 +74,7 @@ void CompileOrRevalidateBlock(u32 start_pc);
 u32 CreateBlockLink(Block* from_block, void* code, u32 newpc);
 
 u32 CompileASMFunctions(u8* code, u32 code_size);
-u32 EmitJump(void* code, const void* dst);
+u32 EmitJump(void* code, const void* dst, bool flush_icache);
 
 void SetFastMap(u32 pc, const void* function);
 

@@ -57,9 +57,6 @@ const void* g_exit_recompiler;
 const void* g_compile_or_revalidate_block;
 const void* g_check_events_and_dispatch;
 const void* g_dispatcher;
-
-static constexpr u32 RECOMPILER_GUARD_SIZE = 4096;
-alignas(4096) static u8 s_code_storage[64 * 1024 * 1024];
 } // namespace CPU::NewRec
 
 namespace CPU::NewRec {
@@ -89,7 +86,7 @@ static constexpr CPU::NewRec::LUTRangeList GetLUTRanges()
 static constexpr u32 GetLUTSlotCount(bool include_unreachable)
 {
   u32 tables = include_unreachable ? 1 : 0; // unreachable table
-  for (const auto [start, end] : GetLUTRanges())
+  for (const auto& [start, end] : GetLUTRanges())
     tables += GetLUTTableCount(start, end);
 
   return tables * LUT_TABLE_SIZE;
@@ -138,7 +135,7 @@ void CPU::NewRec::AllocateLUTs()
 
   // Make the unreachable table jump to the invalid code callback.
   for (u32 i = 0; i < LUT_TABLE_COUNT; i++)
-    code_table_ptr[i] = InvalidCodeFunction;
+    code_table_ptr[i] = reinterpret_cast<const void*>(InvalidCodeFunction);
 
   // Mark everything as unreachable to begin with.
   for (u32 i = 0; i < LUT_TABLE_COUNT; i++)
@@ -149,7 +146,7 @@ void CPU::NewRec::AllocateLUTs()
   code_table_ptr += LUT_TABLE_SIZE;
 
   // Allocate ranges.
-  for (const auto [start, end] : GetLUTRanges())
+  for (const auto& [start, end] : GetLUTRanges())
   {
     const u32 start_slot = start >> LUT_TABLE_SHIFT;
     const u32 count = GetLUTTableCount(start, end);
@@ -348,7 +345,7 @@ void CPU::NewRec::CompileOrRevalidateBlock(u32 start_pc)
   {
     // block failed to compile
     // TODO: this shouldn't backlink
-    block->host_code = &CPU::CodeCache::InterpretUncachedBlock<PGXPMode::Disabled>;
+    block->host_code = reinterpret_cast<const void*>(&CPU::CodeCache::InterpretUncachedBlock<PGXPMode::Disabled>);
     Panic("Block failed compilation");
   }
 
@@ -392,7 +389,7 @@ u32 CPU::NewRec::CreateBlockLink(Block* block, void* code, u32 newpc)
 
   Log_DebugPrintf("Linking %p with dst pc %08X to %p%s", code, newpc, dst,
                   (dst == g_compile_or_revalidate_block) ? "[compiler]" : "");
-  return EmitJump(code, dst);
+  return EmitJump(code, dst, false);
 }
 
 void CPU::NewRec::BacklinkBlocks(u32 pc, const void* dst)
@@ -405,7 +402,7 @@ void CPU::NewRec::BacklinkBlocks(u32 pc, const void* dst)
   {
     Log_DebugPrintf("Backlinking %p with dst pc %08X to %p%s", it->second, pc, dst,
                     (dst == g_compile_or_revalidate_block) ? "[compiler]" : "");
-    EmitJump(it->second, dst);
+    EmitJump(it->second, dst, true);
   }
 }
 
@@ -454,7 +451,7 @@ void CPU::NewRec::Shutdown()
 
 void CPU::NewRec::Execute()
 {
-  reinterpret_cast<void (*)()>(g_enter_recompiler)();
+  reinterpret_cast<void (*)()>(const_cast<void*>(g_enter_recompiler))();
 }
 
 void CPU::NewRec::InvalidateBlocksWithPageNumber(u32 index)
