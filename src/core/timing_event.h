@@ -94,7 +94,7 @@ std::unique_ptr<TimingEvent> CreateTimingEvent(std::string name, TickCount perio
 bool DoState(StateWrapper& sw);
 
 bool IsRunningEvents();
-void SetInterrupted();
+void SetFrameDone();
 void RunEvents();
 
 void UpdateCPUDowncount();

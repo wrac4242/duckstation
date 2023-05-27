@@ -177,8 +177,8 @@ bool InjectEXEFromBuffer(const void* buffer, u32 buffer_size, bool patch_loader 
 
 u32 GetFrameNumber();
 u32 GetInternalFrameNumber();
-void VBlankStart();
 void IncrementInternalFrameNumber();
+void FrameDone();
 
 const std::string& GetDiscPath();
 const std::string& GetGameSerial();

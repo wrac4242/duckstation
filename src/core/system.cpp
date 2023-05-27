@@ -1615,7 +1615,7 @@ void System::Execute()
   }
 }
 
-void System::VBlankStart()
+void System::FrameDone()
 {
   s_frame_number++;
 

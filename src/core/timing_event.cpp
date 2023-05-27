@@ -17,7 +17,7 @@ static TimingEvent* s_active_events_tail;
 static TimingEvent* s_current_event = nullptr;
 static u32 s_active_event_count = 0;
 static u32 s_global_tick_counter = 0;
-static bool s_interrupted = false;
+static bool s_frame_done = false;
 
 u32 GetGlobalTickCounter()
 {
@@ -263,9 +263,9 @@ bool IsRunningEvents()
   return (s_current_event != nullptr);
 }
 
-void SetInterrupted()
+void SetFrameDone()
 {
-  s_interrupted = true;
+  s_frame_done = true;
 }
 
 void RunEvents()
@@ -314,10 +314,10 @@ void RunEvents()
   s_current_event = nullptr;
   UpdateCPUDowncount();
 
-  if (s_interrupted)
+  if (s_frame_done)
   {
-    s_interrupted = false;
-    CPU::ExitExecution();
+    s_frame_done = false;
+    System::FrameDone();
   }
 }
 

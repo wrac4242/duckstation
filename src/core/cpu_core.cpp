@@ -1777,7 +1777,7 @@ void ExitExecution()
 {
   // can't exit while running events without messing things up
   if (TimingEvents::IsRunningEvents())
-    TimingEvents::SetInterrupted();
+    TimingEvents::SetFrameDone();
   else
     fastjmp_jmp(&s_jmp_buf, 1);
 }
