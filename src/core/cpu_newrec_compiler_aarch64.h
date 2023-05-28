@@ -22,10 +22,10 @@ protected:
 
   const void* GetCurrentCodePointer() override;
 
-  void LoadHostRegWithConstant(u32 reg, u32 val);
-  void LoadHostRegFromCPUPointer(u32 reg, const void* ptr);
-  void StoreConstantToCPUPointer(u32 val, const void* ptr);
-  void StoreHostRegToCPUPointer(u32 reg, const void* ptr);
+  void LoadHostRegWithConstant(u32 reg, u32 val) override;
+  void LoadHostRegFromCPUPointer(u32 reg, const void* ptr) override;
+  void StoreConstantToCPUPointer(u32 val, const void* ptr) override;
+  void StoreHostRegToCPUPointer(u32 reg, const void* ptr) override;
   void CopyHostReg(u32 dst, u32 src) override;
 
   void Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer, u32 far_code_space) override;

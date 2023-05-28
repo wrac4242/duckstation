@@ -589,6 +589,7 @@ void CPU::NewRec::AArch64Compiler::EndAndLinkBlock(const std::optional<u32>& new
       armAsm->nop();
       const u32 size = CreateBlockLink(m_block, placeholder, newpc.value());
       DebugAssert(size == kInstructionSize);
+      UNREFERENCED_VARIABLE(size);
     }
   }
 
@@ -1703,7 +1704,7 @@ void CPU::NewRec::AArch64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize
   const WRegister addr = WRegister(AllocateHostReg(HR_CALLEE_SAVED, HR_TYPE_TEMP));
   ComputeLoadStoreAddressArg(cf, address, addr);
   armAsm->and_(RWARG1, addr, armCheckLogicalConstant(~0x3u));
-  GenerateLoad(RWARG1, MemoryAccessSize::Word, false, [this]() { return RWRET; });
+  GenerateLoad(RWARG1, MemoryAccessSize::Word, false, []() { return RWRET; });
 
   if (inst->r.rt == Reg::zero)
   {
@@ -1776,7 +1777,7 @@ void CPU::NewRec::AArch64Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSiz
 {
   FlushForLoadStore(address, false);
   const WRegister addr = ComputeLoadStoreAddressArg(cf, address);
-  GenerateLoad(addr, MemoryAccessSize::Word, false, [this]() { return RWRET; });
+  GenerateLoad(addr, MemoryAccessSize::Word, false, []() { return RWRET; });
 
   const u32 index = static_cast<u32>(inst->r.rt.GetValue());
   const auto [ptr, action] = GetGTERegisterPointer(index, true);
@@ -1863,7 +1864,7 @@ void CPU::NewRec::AArch64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize
   const WRegister addr = WRegister(AllocateHostReg(HR_CALLEE_SAVED, HR_TYPE_TEMP));
   ComputeLoadStoreAddressArg(cf, address, addr);
   armAsm->and_(RWARG1, addr, armCheckLogicalConstant(~0x3u));
-  GenerateLoad(RWARG1, MemoryAccessSize::Word, false, [this]() { return RWRET; });
+  GenerateLoad(RWARG1, MemoryAccessSize::Word, false, []() { return RWRET; });
 
   // TODO: this can take over rt's value if it's no longer needed
   // NOTE: can't trust T in cf because of the flush

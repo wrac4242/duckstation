@@ -1531,7 +1531,7 @@ void CPU::NewRec::X64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize siz
   ComputeLoadStoreAddressArg(cf, address, addr);
   cg->mov(RWARG1, addr);
   cg->and_(RWARG1, ~0x3u);
-  GenerateLoad(RWARG1, MemoryAccessSize::Word, false, [this]() { return RWRET; });
+  GenerateLoad(RWARG1, MemoryAccessSize::Word, false, []() { return RWRET; });
 
   if (inst->r.rt == Reg::zero)
   {
@@ -1610,7 +1610,7 @@ void CPU::NewRec::X64Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSize si
 {
   FlushForLoadStore(address, false);
   const Reg32 addr = ComputeLoadStoreAddressArg(cf, address);
-  GenerateLoad(addr, MemoryAccessSize::Word, false, [this]() { return RWRET; });
+  GenerateLoad(addr, MemoryAccessSize::Word, false, []() { return RWRET; });
 
   const u32 index = static_cast<u32>(inst->r.rt.GetValue());
   const auto [ptr, action] = GetGTERegisterPointer(index, true);
@@ -1696,7 +1696,7 @@ void CPU::NewRec::X64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize siz
   ComputeLoadStoreAddressArg(cf, address, addr);
   cg->mov(RWARG1, addr);
   cg->and_(RWARG1, ~0x3u);
-  GenerateLoad(RWARG1, MemoryAccessSize::Word, false, [this]() { return RWRET; });
+  GenerateLoad(RWARG1, MemoryAccessSize::Word, false, []() { return RWRET; });
 
   // TODO: this can take over rt's value if it's no longer needed
   // NOTE: can't trust T in cf because of the flush

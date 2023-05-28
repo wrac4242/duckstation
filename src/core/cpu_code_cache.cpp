@@ -566,7 +566,7 @@ void LogCurrentState()
     regs.k1, regs.gp, regs.sp, regs.fp, regs.ra,
     (g_state.next_load_delay_reg == Reg::count) ? "NONE" : GetRegName(g_state.next_load_delay_reg),
     (g_state.next_load_delay_reg == Reg::count) ? 0 : g_state.next_load_delay_value, g_state.cop0_regs.cause.bits,
-    g_state.cop0_regs.sr.bits, crc32(0, (const Bytef*)&g_state.gte_regs, sizeof(g_state.gte_regs)));
+    g_state.cop0_regs.sr.bits, static_cast<u32>(crc32(0, (const Bytef*)&g_state.gte_regs, sizeof(g_state.gte_regs))));
 }
 
 CodeBlockKey GetNextBlockKey()
