@@ -23,6 +23,7 @@ public:
 
   virtual void SetDefaultConfig(SettingsInterface& si) = 0;
 
+  virtual bool HasPlatformWindow() const = 0;
   virtual bool CreatePlatformWindow(std::string title) = 0;
   virtual void DestroyPlatformWindow() = 0;
 

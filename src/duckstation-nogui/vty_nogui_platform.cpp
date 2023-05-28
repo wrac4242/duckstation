@@ -7,6 +7,7 @@
 #include "common/threading.h"
 #include "core/host.h"
 #include "core/host_settings.h"
+#include "fmt/format.h"
 #include "nogui_host.h"
 #include "resource.h"
 #include "vty_key_names.h"
@@ -60,6 +61,11 @@ void VTYNoGUIPlatform::SetDefaultConfig(SettingsInterface& si)
   // noop
 }
 
+bool VTYNoGUIPlatform::HasPlatformWindow() const
+{
+  return true;
+}
+
 bool VTYNoGUIPlatform::CreatePlatformWindow(std::string title)
 {
   return true;
@@ -94,7 +100,7 @@ std::optional<WindowInfo> VTYNoGUIPlatform::GetPlatformWindowInfo()
   if (wi.surface_width == 0)
   {
     if (!DRMDisplay::GetCurrentMode(&wi.surface_width, &wi.surface_height, &wi.surface_refresh_rate))
-      Log_ErrorPrintf("Failed to get current mode, will use default.");
+      Log_ErrorPrint("Failed to get current mode, will use default.");
   }
 #endif
 
@@ -171,22 +177,20 @@ void VTYNoGUIPlatform::OpenEVDevFDs()
 {
   for (int i = 0; i < 1000; i++)
   {
-    TinyString path;
-    path.Format("/dev/input/event%d", i);
-
-    int fd = open(path, O_RDONLY | O_NONBLOCK);
+    const std::string path(fmt::format("/dev/input/event{}", i));
+    const int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
     if (fd < 0)
       break;
 
     struct libevdev* obj;
     if (libevdev_new_from_fd(fd, &obj) != 0)
     {
-      Log_ErrorPrintf("libevdev_new_from_fd(%s) failed", path.GetCharArray());
+      Log_ErrorPrintf("libevdev_new_from_fd(%s) failed", path.c_str());
       close(fd);
       continue;
     }
 
-    Log_DevPrintf("Input path: %s", path.GetCharArray());
+    Log_DevPrintf("Input path: %s", path.c_str());
     Log_DevPrintf("Input device name: \"%s\"", libevdev_get_name(obj));
     Log_DevPrintf("Input device ID: bus %#x vendor %#x product %#x", libevdev_get_id_bustype(obj),
                   libevdev_get_id_vendor(obj), libevdev_get_id_product(obj));
@@ -200,7 +204,7 @@ void VTYNoGUIPlatform::OpenEVDevFDs()
 
     const int grab_res = libevdev_grab(obj, LIBEVDEV_GRAB);
     if (grab_res != 0)
-      Log_WarningPrintf("Failed to grab '%s' (%s): %d", libevdev_get_name(obj), path.GetCharArray(), grab_res);
+      Log_WarningPrintf("Failed to grab '%s' (%s): %d", libevdev_get_name(obj), path.c_str(), grab_res);
 
     m_evdev_keyboards.push_back({obj, fd});
   }

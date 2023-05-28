@@ -68,7 +68,7 @@ bool WaylandNoGUIPlatform::Initialize()
   // We need a shell/compositor, or at least one we understand.
   if (!m_compositor || !m_xdg_wm_base)
   {
-    Panic("Missing Wayland shell/compositor\n");
+    Panic("Missing Wayland shell/compositor");
     return false;
   }
 
@@ -92,6 +92,11 @@ bool WaylandNoGUIPlatform::ConfirmMessage(const std::string_view& title, const s
 
 void WaylandNoGUIPlatform::SetDefaultConfig(SettingsInterface& si) {}
 
+bool WaylandNoGUIPlatform::HasPlatformWindow() const
+{
+  return (m_surface != nullptr);
+}
+
 bool WaylandNoGUIPlatform::CreatePlatformWindow(std::string title)
 {
   s32 window_x, window_y, window_width, window_height;
@@ -109,7 +114,7 @@ bool WaylandNoGUIPlatform::CreatePlatformWindow(std::string title)
       !(m_xdg_surface = xdg_wm_base_get_xdg_surface(m_xdg_wm_base, m_surface)) ||
       !(m_xdg_toplevel = xdg_surface_get_toplevel(m_xdg_surface)))
   {
-    Log_ErrorPrintf("Failed to create compositor/shell surfaces");
+    Log_ErrorPrint("Failed to create compositor/shell surfaces");
     return false;
   }
 
@@ -465,7 +470,8 @@ bool WaylandNoGUIPlatform::OpenURL(const std::string_view& url)
 
 bool WaylandNoGUIPlatform::CopyTextToClipboard(const std::string_view& text)
 {
-  Log_ErrorPrintf("WaylandNoGUIPlatform::CopyTextToClipboard() not implemented: %.*s", static_cast<int>(text.size()), text.data());
+  Log_ErrorPrintf("WaylandNoGUIPlatform::CopyTextToClipboard() not implemented: %.*s", static_cast<int>(text.size()),
+                  text.data());
   return false;
 }
 
