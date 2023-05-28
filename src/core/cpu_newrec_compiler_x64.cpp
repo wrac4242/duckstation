@@ -1960,7 +1960,7 @@ void CPU::NewRec::X64Compiler::Compile_mtc2(CompileFlags cf)
     if (cf.const_t)
     {
       const u16 cv = Truncate16(GetConstantRegU32(cf.MipsT()));
-      cg->mov(cg->dword[PTR(ptr)], sign ? ::SignExtend16(cv) : ::ZeroExtend16(cv));
+      cg->mov(cg->dword[PTR(ptr)], sign ? ::SignExtend32(cv) : ::ZeroExtend32(cv));
     }
     else if (cf.valid_host_t)
     {

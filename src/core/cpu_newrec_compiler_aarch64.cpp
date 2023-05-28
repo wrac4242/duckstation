@@ -378,8 +378,7 @@ void CPU::NewRec::AArch64Compiler::Reset(Block* block, u8* code_buffer, u32 code
     HostRegAlloc& ra = m_host_regs[i];
 
     if (i == RWARG1.GetCode() || i == RWARG1.GetCode() || i == RWARG2.GetCode() || i == RWARG3.GetCode() ||
-        i == RWSCRATCH.GetCode() || i == RSTATE.GetCode() || i == membase_idx || i == x18.GetCode() ||
-        i == sp.GetCode() || i == lr.GetCode())
+        i == RWSCRATCH.GetCode() || i == RSTATE.GetCode() || i == membase_idx || i == x18.GetCode() || i >= 30)
     {
       continue;
     }
@@ -1463,7 +1462,7 @@ CPU::NewRec::AArch64Compiler::ComputeLoadStoreAddressArg(CompileFlags cf,
   {
     EmitMov(dst, address.value());
   }
-  else
+  else if (imm == 0)
   {
     if (cf.valid_host_s)
     {
@@ -1474,9 +1473,18 @@ CPU::NewRec::AArch64Compiler::ComputeLoadStoreAddressArg(CompileFlags cf,
     {
       armAsm->ldr(dst, MipsPtr(cf.MipsS()));
     }
-
-    if (imm != 0)
+  }
+  else
+  {
+    if (cf.valid_host_s)
+    {
+      armAsm->add(dst, CFGetRegS(cf), armCheckAddSubConstant(static_cast<s32>(inst->i.imm_sext32())));
+    }
+    else
+    {
+      armAsm->ldr(dst, MipsPtr(cf.MipsS()));
       armAsm->add(dst, dst, armCheckAddSubConstant(static_cast<s32>(inst->i.imm_sext32())));
+    }
   }
 
   return dst;
@@ -1915,7 +1923,7 @@ void CPU::NewRec::AArch64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSiz
   {
     case GTERegisterAccessAction::Direct:
     {
-      armAsm->ldr(RWRET, PTR(ptr));
+      armAsm->ldr(RWARG2, PTR(ptr));
     }
     break;
 
@@ -1925,6 +1933,7 @@ void CPU::NewRec::AArch64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSiz
       Flush(FLUSH_FOR_C_CALL);
       EmitMov(RWARG1, index);
       EmitCall(reinterpret_cast<const void*>(&GTE::ReadRegister));
+      armAsm->mov(RWARG2, RWRET);
     }
     break;
 
@@ -1936,7 +1945,7 @@ void CPU::NewRec::AArch64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSiz
   }
 
   const WRegister addr = ComputeLoadStoreAddressArg(cf, address);
-  GenerateStore(addr, RWRET, size);
+  GenerateStore(addr, RWARG2, size);
 }
 
 void CPU::NewRec::AArch64Compiler::Compile_mtc0(CompileFlags cf)
@@ -2105,7 +2114,7 @@ void CPU::NewRec::AArch64Compiler::Compile_mtc2(CompileFlags cf)
     else if (cf.const_t)
     {
       const u16 cv = Truncate16(GetConstantRegU32(cf.MipsT()));
-      StoreConstantToCPUPointer(sign ? ::SignExtend16(cv) : ::ZeroExtend16(cv), ptr);
+      StoreConstantToCPUPointer(sign ? ::SignExtend32(cv) : ::ZeroExtend32(cv), ptr);
     }
     else
     {
