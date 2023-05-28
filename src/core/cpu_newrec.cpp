@@ -30,6 +30,8 @@ static void ClearBlocks();
 static void CompileASMFunctions();
 
 static u32 ReadBlockInstructions(u32 start_pc);
+static void FillBlockRegInfo(Block* block);
+static void SetRegAccess(InstructionInfo* inst, Reg reg, bool write);
 static void AddBlockToPageList(Block* block);
 static void BacklinkBlocks(u32 pc, const void* dst);
 static void UnlinkBlockExits(Block* block);
@@ -208,37 +210,6 @@ CPU::NewRec::Block* CPU::NewRec::LookupBlock(u32 pc)
   return s_block_map[table][idx];
 }
 
-u32 CPU::NewRec::ReadBlockInstructions(u32 start_pc)
-{
-  u32 pc = start_pc;
-  bool is_branch = false;
-  bool is_branch_delay = false;
-
-  // TODO: Jump to other block if it exists at this pc?
-
-  s_block_instructions.clear();
-
-  for (;;)
-  {
-    Instruction i;
-    if (!SafeReadInstruction(pc, &i.bits) || !IsInvalidInstruction(i))
-      break;
-
-    is_branch_delay = is_branch;
-    is_branch = IsBranchInstruction(i);
-    s_block_instructions.push_back(i);
-    pc += sizeof(Instruction);
-
-    if (is_branch_delay)
-      break;
-
-    if (IsExitBlockInstruction(i))
-      break;
-  }
-
-  return static_cast<u32>(s_block_instructions.size());
-}
-
 CPU::NewRec::Block* CPU::NewRec::CreateBlock(u32 pc)
 {
   const u32 size = ReadBlockInstructions(pc);
@@ -274,7 +245,8 @@ CPU::NewRec::Block* CPU::NewRec::CreateBlock(u32 pc)
 
   if (!block)
   {
-    block = static_cast<Block*>(std::malloc(sizeof(Block) + (sizeof(Instruction) * size)));
+    block =
+      static_cast<Block*>(std::malloc(sizeof(Block) + (sizeof(Instruction) * size) + (sizeof(InstructionInfo) * size)));
     Assert(block);
     s_blocks.push_back(block);
   }
@@ -287,6 +259,8 @@ CPU::NewRec::Block* CPU::NewRec::CreateBlock(u32 pc)
   block->invalidated = false;
   std::memcpy(block->Instructions(), s_block_instructions.data(), sizeof(Instruction) * size);
   s_block_map[table][idx] = block;
+
+  FillBlockRegInfo(block);
 
   // add it to the tracking list for its page
   AddBlockToPageList(block);
@@ -553,4 +527,294 @@ bool CPU::NewRec::BackpatchLoadStore(void* code_address, u32 guest_address)
   s_fastmem_faulting_pcs.insert(info.guest_pc);
   s_fastmem_backpatch_info.erase(iter);
   return true;
+}
+
+// TODO: move this into the compiler
+
+u32 CPU::NewRec::ReadBlockInstructions(u32 start_pc)
+{
+  u32 pc = start_pc;
+  bool is_branch = false;
+  bool is_branch_delay = false;
+
+  // TODO: Jump to other block if it exists at this pc?
+
+  s_block_instructions.clear();
+
+  for (;;)
+  {
+    Instruction i;
+    if (!SafeReadInstruction(pc, &i.bits) || !IsInvalidInstruction(i))
+      break;
+
+    is_branch_delay = is_branch;
+    is_branch = IsBranchInstruction(i);
+    s_block_instructions.push_back(i);
+    pc += sizeof(Instruction);
+
+    if (is_branch_delay)
+      break;
+
+    if (IsExitBlockInstruction(i))
+      break;
+  }
+
+  return static_cast<u32>(s_block_instructions.size());
+}
+
+void CPU::NewRec::SetRegAccess(InstructionInfo* inst, Reg reg, bool write)
+{
+  if (reg == Reg::zero)
+    return;
+
+  if (!write)
+  {
+    for (u32 i = 0; i < std::size(inst->read_reg); i++)
+    {
+      if (inst->read_reg[i] == Reg::zero)
+      {
+        inst->read_reg[i] = reg;
+        break;
+      }
+    }
+  }
+  else
+  {
+#if 0
+    for (u32 i = 0; i < std::size(inst->write_reg); i++)
+    {
+      if (inst->write_reg[i] == Reg::zero)
+      {
+        inst->write_reg[i] = reg;
+        break;
+      }
+    }
+#endif
+  }
+}
+
+#define BackpropSetReads(reg)                                                                                          \
+  do                                                                                                                   \
+  {                                                                                                                    \
+    if (!(inst->reg_flags[static_cast<u8>(reg)] & RI_USED))                                                            \
+      inst->reg_flags[static_cast<u8>(reg)] |= RI_LASTUSE;                                                             \
+    prev->reg_flags[static_cast<u8>(reg)] |= RI_LIVE | RI_USED;                                                        \
+    inst->reg_flags[static_cast<u8>(reg)] |= RI_USED;                                                                  \
+    SetRegAccess(inst, reg, false);                                                                                    \
+  } while (0)
+
+#define BackpropSetWrites(reg)                                                                                         \
+  do                                                                                                                   \
+  {                                                                                                                    \
+    prev->reg_flags[static_cast<u8>(reg)] &= ~(RI_LIVE | RI_USED);                                                     \
+    if (!(inst->reg_flags[static_cast<u8>(reg)] & RI_USED))                                                            \
+      inst->reg_flags[static_cast<u8>(reg)] |= RI_LASTUSE;                                                             \
+    inst->reg_flags[static_cast<u8>(reg)] |= RI_USED;                                                                  \
+    SetRegAccess(inst, reg, true);                                                                                     \
+  } while (0)
+
+// TODO: memory loads should be delayed one instruction because of stupid load delays.
+#define BackpropSetWritesDelayed(reg) BackpropSetWrites(reg)
+
+void CPU::NewRec::FillBlockRegInfo(Block* block)
+{
+  const Instruction* iinst = block->Instructions() + (block->size - 1);
+  InstructionInfo* const start = block->InstructionsInfo();
+  InstructionInfo* inst = start + (block->size - 1);
+  std::memset(inst->reg_flags, RI_LIVE, sizeof(inst->reg_flags));
+  std::memset(inst->read_reg, 0, sizeof(inst->read_reg));
+  //std::memset(inst->write_reg, 0, sizeof(inst->write_reg));
+
+  while (inst != start)
+  {
+    InstructionInfo* prev = inst - 1;
+    std::memcpy(prev, inst, sizeof(InstructionInfo));
+
+    const Reg rs = iinst->r.rs;
+    const Reg rt = iinst->r.rt;
+
+    switch (iinst->op)
+    {
+      case InstructionOp::funct:
+      {
+        const Reg rd = iinst->r.rd;
+
+        switch (iinst->r.funct)
+        {
+          case InstructionFunct::sll:
+          case InstructionFunct::srl:
+          case InstructionFunct::sra:
+            BackpropSetWrites(rd);
+            BackpropSetReads(rt);
+            break;
+
+          case InstructionFunct::sllv:
+          case InstructionFunct::srlv:
+          case InstructionFunct::srav:
+          case InstructionFunct::add:
+          case InstructionFunct::addu:
+          case InstructionFunct::sub:
+          case InstructionFunct::subu:
+          case InstructionFunct::and_:
+          case InstructionFunct::or_:
+          case InstructionFunct::xor_:
+          case InstructionFunct::nor:
+          case InstructionFunct::slt:
+          case InstructionFunct::sltu:
+            BackpropSetWrites(rd);
+            BackpropSetReads(rt);
+            BackpropSetReads(rs);
+            break;
+
+          case InstructionFunct::jr:
+            BackpropSetReads(rs);
+            break;
+
+          case InstructionFunct::jalr:
+            BackpropSetReads(rs);
+            BackpropSetWrites(rd);
+            break;
+
+          case InstructionFunct::mfhi:
+            BackpropSetWrites(rd);
+            BackpropSetReads(Reg::hi);
+            break;
+
+          case InstructionFunct::mflo:
+            BackpropSetWrites(rd);
+            BackpropSetReads(Reg::lo);
+            break;
+
+          case InstructionFunct::mthi:
+            BackpropSetWrites(Reg::hi);
+            BackpropSetReads(rs);
+            break;
+
+          case InstructionFunct::mtlo:
+            BackpropSetWrites(Reg::lo);
+            BackpropSetReads(rs);
+            break;
+
+          case InstructionFunct::mult:
+          case InstructionFunct::multu:
+          case InstructionFunct::div:
+          case InstructionFunct::divu:
+            BackpropSetWrites(Reg::hi);
+            BackpropSetWrites(Reg::lo);
+            BackpropSetReads(rs);
+            BackpropSetReads(rt);
+            break;
+
+          case InstructionFunct::syscall:
+          case InstructionFunct::break_:
+            break;
+
+          default:
+            Log_ErrorPrintf("Unknown funct %u", static_cast<u32>(iinst->r.funct.GetValue()));
+            break;
+        }
+      }
+      break;
+
+      case InstructionOp::b:
+      {
+        if ((static_cast<u8>(iinst->i.rt.GetValue()) & u8(0x1E)) == u8(0x10))
+          BackpropSetWrites(Reg::ra);
+        BackpropSetReads(rs);
+      }
+      break;
+
+      case InstructionOp::j:
+        break;
+
+      case InstructionOp::jal:
+        BackpropSetWrites(Reg::ra);
+        break;
+
+      case InstructionOp::beq:
+      case InstructionOp::bne:
+        BackpropSetReads(rs);
+        BackpropSetReads(rt);
+        break;
+
+      case InstructionOp::blez:
+      case InstructionOp::bgtz:
+        BackpropSetReads(rs);
+        break;
+
+      case InstructionOp::addi:
+      case InstructionOp::addiu:
+      case InstructionOp::slti:
+      case InstructionOp::sltiu:
+      case InstructionOp::andi:
+      case InstructionOp::ori:
+      case InstructionOp::xori:
+        BackpropSetWrites(rt);
+        BackpropSetReads(rs);
+        break;
+
+      case InstructionOp::lui:
+        BackpropSetWrites(rt);
+        break;
+
+      case InstructionOp::lb:
+      case InstructionOp::lh:
+      case InstructionOp::lw:
+      case InstructionOp::lbu:
+      case InstructionOp::lhu:
+        BackpropSetWritesDelayed(rt);
+        BackpropSetReads(rs);
+        break;
+
+      case InstructionOp::lwl:
+      case InstructionOp::lwr:
+        BackpropSetWritesDelayed(rt);
+        BackpropSetReads(rs);
+        BackpropSetReads(rt);
+        break;
+
+      case InstructionOp::sb:
+      case InstructionOp::sh:
+      case InstructionOp::swl:
+      case InstructionOp::sw:
+      case InstructionOp::swr:
+        BackpropSetReads(rt);
+        BackpropSetReads(rs);
+        break;
+
+      case InstructionOp::cop0:
+      case InstructionOp::cop2:
+      {
+        if (iinst->cop.IsCommonInstruction())
+        {
+          switch (iinst->cop.CommonOp())
+          {
+            case CopCommonInstruction::mfcn:
+            case CopCommonInstruction::cfcn:
+              BackpropSetWritesDelayed(rt);
+              break;
+
+            case CopCommonInstruction::mtcn:
+            case CopCommonInstruction::ctcn:
+              BackpropSetReads(rt);
+              break;
+          }
+        }
+        break;
+
+        case InstructionOp::lwc2:
+        case InstructionOp::swc2:
+          BackpropSetReads(rs);
+          BackpropSetReads(rt);
+          break;
+
+        default:
+          Log_ErrorPrintf("Unknown op %u", static_cast<u32>(iinst->r.funct.GetValue()));
+          break;
+      }
+    } // end switch
+
+    inst--;
+    iinst--;
+  } // end while
 }

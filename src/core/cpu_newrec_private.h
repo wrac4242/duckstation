@@ -24,6 +24,41 @@ using CodeLUT = const void**;
 using CodeLUTArray = std::array<CodeLUT, LUT_TABLE_COUNT>;
 using BlockLinkMap = std::unordered_multimap<u32, void*>; // TODO: try ordered?
 
+enum RegInfoFlags : u8
+{
+  RI_LIVE = (1 << 0),
+  RI_USED = (1 << 1),
+  RI_LASTUSE = (1 << 2),
+};
+
+struct InstructionInfo
+{
+  u8 reg_flags[static_cast<u8>(Reg::count)];
+  // Reg write_reg[3];
+  Reg read_reg[3];
+
+  // If unset, values which are not live will not be written back to memory.
+  // Tends to break stuff at the moment.
+  static constexpr bool WRITE_DEAD_VALUES = true;
+
+  /// Returns true if the register is used later in the block, and this isn't the last instruction to use it.
+  /// In other words, the register is worth keeping in a host register/caching it.
+  inline bool UsedTest(Reg reg) const { return (reg_flags[static_cast<u8>(reg)] & (RI_USED | RI_LASTUSE)) == RI_USED; }
+
+  /// Returns true if the value should be computed/written back.
+  /// Basically, this means it's either used before it's overwritten, or not overwritten by the end of the block.
+  inline bool LiveTest(Reg reg) const
+  {
+    return WRITE_DEAD_VALUES || ((reg_flags[static_cast<u8>(reg)] & RI_LIVE) != 0);
+  }
+
+  /// Returns true if the register can be renamed into another.
+  inline bool RenameTest(Reg reg) const { return (reg == Reg::zero || !UsedTest(reg) || !LiveTest(reg)); }
+
+  /// Returns true if this instruction reads this register.
+  inline bool ReadsReg(Reg reg) const { return (read_reg[0] == reg || read_reg[1] == reg || read_reg[2] == reg); }
+};
+
 struct Block
 {
   u32 pc;
@@ -38,9 +73,15 @@ struct Block
 
   bool invalidated;
 
-  // followed by Instruction * size
+  // followed by Instruction * size, InstructionRegInfo * size
   const Instruction* Instructions() const { return reinterpret_cast<const Instruction*>(this + 1); }
   Instruction* Instructions() { return reinterpret_cast<Instruction*>(this + 1); }
+
+  const InstructionInfo* InstructionsInfo() const
+  {
+    return reinterpret_cast<const InstructionInfo*>(Instructions() + size);
+  }
+  InstructionInfo* InstructionsInfo() { return reinterpret_cast<InstructionInfo*>(Instructions() + size); }
 };
 
 using BlockLUTArray = std::array<Block**, LUT_TABLE_COUNT>;

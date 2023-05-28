@@ -202,7 +202,7 @@ protected:
   ALWAYS_INLINE bool IsHostRegAllocated(u32 r) const { return (m_host_regs[r].flags & HR_ALLOCATED) != 0; }
   static const char* GetReadWriteModeString(u32 flags);
   virtual const char* GetHostRegName(u32 reg) const = 0;
-  std::optional<u32> GetFreeHostReg(u32 flags);
+  u32 GetFreeHostReg(u32 flags);
   u32 AllocateHostReg(u32 flags, HostRegAllocType type = HR_TYPE_TEMP, Reg reg = Reg::count);
   std::optional<u32> CheckHostReg(u32 flags, HostRegAllocType type = HR_TYPE_TEMP, Reg reg = Reg::count);
   u32 AllocateTempHostReg(u32 flags = 0);
@@ -214,6 +214,8 @@ protected:
   void ClearHostRegNeeded(u32 reg);
   void ClearHostRegsNeeded();
   void DeleteMIPSReg(Reg reg, bool flush);
+  bool TryRenameMIPSReg(Reg to, Reg from, u32 fromhost, Reg other);
+  void UpdateHostRegCounters();
 
   virtual void LoadHostRegWithConstant(u32 reg, u32 val) = 0;
   virtual void LoadHostRegFromCPUPointer(u32 reg, const void* ptr) = 0;
@@ -378,6 +380,7 @@ protected:
   TickCount m_gte_done_cycle = 0;
 
   const Instruction* inst = nullptr;
+  const InstructionInfo* iinfo = nullptr;
   u32 m_current_instruction_pc = 0;
   bool m_current_instruction_branch_delay_slot = false;
   bool m_branch_delay_slot_swapped = false;
@@ -411,6 +414,7 @@ protected:
     bool dirty_gte_done_cycle;
     bool block_ended;
     const Instruction* inst;
+    const InstructionInfo* iinfo;
     u32 current_instruction_pc;
     bool current_instruction_delay_slot;
     std::bitset<static_cast<size_t>(Reg::count)> const_regs_valid;

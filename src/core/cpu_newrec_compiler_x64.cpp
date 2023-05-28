@@ -104,6 +104,22 @@ static ZyanStatus ZydisFormatterPrintAddressAbsolute(const ZydisFormatter* forma
       }
     }
   }
+  else if (address == A(&g_state.load_delay_reg))
+  {
+    len = snprintf(buf, sizeof(buf), "g_state.load_delay_reg");
+  }
+  else if (address == A(&g_state.next_load_delay_reg))
+  {
+    len = snprintf(buf, sizeof(buf), "g_state.next_load_delay_reg");
+  }
+  else if (address == A(&g_state.load_delay_value))
+  {
+    len = snprintf(buf, sizeof(buf), "g_state.load_delay_value");
+  }
+  else if (address == A(&g_state.next_load_delay_value))
+  {
+    len = snprintf(buf, sizeof(buf), "g_state.next_load_delay_value");
+  }
   else if (address == A(&g_state.pending_ticks))
   {
     len = snprintf(buf, sizeof(buf), "g_state.pending_ticks");

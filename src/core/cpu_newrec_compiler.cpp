@@ -14,6 +14,9 @@
 #include <limits>
 Log_SetChannel(NewRec::Compiler);
 
+// TODO: direct link skip delay slot check
+// TODO: speculative constants
+
 CPU::NewRec::Compiler::Compiler() = default;
 
 CPU::NewRec::Compiler::~Compiler() = default;
@@ -26,6 +29,7 @@ void CPU::NewRec::Compiler::Reset(Block* block, u8* code_buffer, u32 code_buffer
   m_cycles = 0;
   m_gte_done_cycle = 0;
   inst = nullptr;
+  iinfo = nullptr;
   m_current_instruction_pc = 0;
   m_current_instruction_branch_delay_slot = false;
   m_dirty_pc = false;
@@ -51,6 +55,7 @@ void CPU::NewRec::Compiler::Reset(Block* block, u8* code_buffer, u32 code_buffer
 void CPU::NewRec::Compiler::BeginBlock()
 {
   inst = m_block->Instructions();
+  iinfo = m_block->InstructionsInfo();
   m_current_instruction_pc = m_block->pc;
   m_current_instruction_branch_delay_slot = false;
   m_compiler_pc += sizeof(Instruction);
@@ -73,6 +78,7 @@ const void* CPU::NewRec::Compiler::CompileBlock(Block* block)
     CompileInstruction();
 
     inst++;
+    iinfo++;
     m_current_instruction_pc += sizeof(Instruction);
     m_compiler_pc += sizeof(Instruction);
     m_dirty_pc = true;
@@ -94,14 +100,13 @@ const void* CPU::NewRec::Compiler::CompileBlock(Block* block)
   const u32 host_instructions = GetHostInstructionCount(code, code_size);
   Log_ProfilePrintf("0x%08X: %u/%ub for %ub (%u inst), blowup: %.2fx, cache: %.2f%%/%.2f%%, ipi: %.2f", block->pc,
                     code_size, far_code_size, block->size * 4, block->size,
-                    static_cast<float>(code_size) / static_cast<float>(block->size * 4),
-                    buffer.GetUsedPct(), buffer.GetFarUsedPct(),
-                    static_cast<float>(host_instructions) / static_cast<float>(block->size));
+                    static_cast<float>(code_size) / static_cast<float>(block->size * 4), buffer.GetUsedPct(),
+                    buffer.GetFarUsedPct(), static_cast<float>(host_instructions) / static_cast<float>(block->size));
 #else
   Log_ProfilePrintf("0x%08X: %u/%ub for %ub (%u inst), blowup: %.2fx, cache: %.2f%%/%.2f%%", block->pc, code_size,
                     far_code_size, block->size * 4, block->size,
-                    static_cast<float>(code_size) / static_cast<float>(block->size * 4),
-                    buffer.GetUsedPct(), buffer.GetFarUsedPct());
+                    static_cast<float>(code_size) / static_cast<float>(block->size * 4), buffer.GetUsedPct(),
+                    buffer.GetFarUsedPct());
 #endif
 
   return code;
@@ -476,25 +481,23 @@ void CPU::NewRec::Compiler::SetCompilerPC(u32 newpc)
   m_dirty_pc = true;
 }
 
-std::optional<u32> CPU::NewRec::Compiler::GetFreeHostReg(u32 flags)
+u32 CPU::NewRec::Compiler::GetFreeHostReg(u32 flags)
 {
   const u32 req_flags = HR_USABLE | (flags & HR_CALLEE_SAVED);
 
   for (u32 i = 0; i < NUM_HOST_REGS; i++)
   {
-    if ((m_host_regs[i].flags & (req_flags | HR_ALLOCATED)) == req_flags)
+    if ((m_host_regs[i].flags & (req_flags | HR_NEEDED | HR_ALLOCATED)) == req_flags)
       return i;
   }
 
   // find register with lowest counter
-  // TODO: used analysis
-  // TODO: when allocating a caller-saved reg and there's none free, swap a callee-saved reg
   u32 lowest = NUM_HOST_REGS;
   u16 lowest_count = std::numeric_limits<u16>::max();
   for (u32 i = 0; i < NUM_HOST_REGS; i++)
   {
     const HostRegAlloc& ra = m_host_regs[i];
-    if ((ra.flags & req_flags) != req_flags)
+    if ((ra.flags & (req_flags | HR_NEEDED)) != req_flags)
       continue;
 
     DebugAssert(ra.flags & HR_ALLOCATED);
@@ -511,16 +514,68 @@ std::optional<u32> CPU::NewRec::Compiler::GetFreeHostReg(u32 flags)
     }
   }
 
-  if (lowest == NUM_HOST_REGS)
-    return std::nullopt;
+  //
+
+  AssertMsg(lowest != NUM_HOST_REGS, "Register allocation failed.");
 
   const HostRegAlloc& ra = m_host_regs[lowest];
   switch (ra.type)
   {
     case HR_TYPE_CPU_REG:
     {
-      Log_DebugPrintf("Freeing register %s in host register %s due for allocation", GetHostRegName(lowest),
+      // If the register is needed later, and we're allocating a callee-saved register, try moving it to a caller-saved
+      // register.
+      if (iinfo->UsedTest(ra.reg) && flags & HR_CALLEE_SAVED)
+      {
+        u32 caller_saved_lowest = NUM_HOST_REGS;
+        u16 caller_saved_lowest_count = std::numeric_limits<u16>::max();
+        for (u32 i = 0; i < NUM_HOST_REGS; i++)
+        {
+          if (!IsHostRegAllocated(i))
+          {
+            caller_saved_lowest = i;
+            caller_saved_lowest_count = 0;
+            break;
+          }
+
+          const HostRegAlloc& caller_ra = m_host_regs[i];
+          if (caller_ra.type == HR_TYPE_TEMP)
+            continue;
+
+          if (caller_ra.counter < caller_saved_lowest_count)
+          {
+            caller_saved_lowest = i;
+            caller_saved_lowest_count = caller_ra.counter;
+          }
+        }
+
+        if (caller_saved_lowest_count < lowest_count)
+        {
+          Log_DebugPrintf("Moving caller-saved register %s in host register %s to %s for allocation",
+                          GetHostRegName(lowest), GetRegName(ra.reg), GetHostRegName(caller_saved_lowest));
+          if (IsHostRegAllocated(caller_saved_lowest))
+            FreeHostReg(caller_saved_lowest);
+          CopyHostReg(caller_saved_lowest, lowest);
+          std::swap(m_host_regs[caller_saved_lowest], m_host_regs[lowest]);
+          DebugAssert(!IsHostRegAllocated(lowest));
+          return lowest;
+        }
+      }
+
+      Log_DebugPrintf("Freeing register %s in host register %s for allocation", GetHostRegName(lowest),
                       GetRegName(ra.reg));
+    }
+    break;
+    case HR_TYPE_LOAD_DELAY_VALUE:
+    {
+      Log_DebugPrintf("Freeing load delay register %s in host register %s for allocation", GetHostRegName(lowest),
+                      GetRegName(ra.reg));
+    }
+    break;
+    case HR_TYPE_NEXT_LOAD_DELAY_VALUE:
+    {
+      Log_DebugPrintf("Freeing next load delay register %s in host register %s due for allocation",
+                      GetHostRegName(lowest), GetRegName(ra.reg));
     }
     break;
     default:
@@ -554,25 +609,19 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
     CancelLoadDelaysToReg(reg);
 
   // Already have a matching type?
-  std::optional<u32> hreg;
   if (type != HR_TYPE_TEMP)
   {
-    hreg = CheckHostReg(flags, type, reg);
+    const std::optional<u32> check_reg = CheckHostReg(flags, type, reg);
 
     // shouldn't be allocating >1 load delay in a single instruction..
     // TODO: prefer callee saved registers for load delay
-    DebugAssert((type != HR_TYPE_LOAD_DELAY_VALUE && type != HR_TYPE_NEXT_LOAD_DELAY_VALUE) || !hreg.has_value());
-    if (hreg.has_value())
-      return hreg.value();
+    DebugAssert((type != HR_TYPE_LOAD_DELAY_VALUE && type != HR_TYPE_NEXT_LOAD_DELAY_VALUE) || !check_reg.has_value());
+    if (check_reg.has_value())
+      return check_reg.value();
   }
 
-  hreg = GetFreeHostReg(flags);
-
-  // TODO: kicking out when full
-  if (!hreg.has_value())
-    Panic("RA failed");
-
-  HostRegAlloc& ra = m_host_regs[hreg.value()];
+  const u32 hreg = GetFreeHostReg(flags);
+  HostRegAlloc& ra = m_host_regs[hreg];
   ra.flags = (ra.flags & IMMUTABLE_HR_FLAGS) | (flags & ALLOWED_HR_FLAGS) | HR_ALLOCATED | HR_NEEDED;
   ra.type = type;
   ra.reg = reg;
@@ -584,7 +633,7 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
     {
       DebugAssert(reg != Reg::zero);
 
-      Log_DebugPrintf("Allocate host reg %s to guest reg %s in %s mode", GetHostRegName(hreg.value()), GetRegName(reg),
+      Log_DebugPrintf("Allocate host reg %s to guest reg %s in %s mode", GetHostRegName(hreg), GetRegName(reg),
                       GetReadWriteModeString(flags));
 
       if (flags & HR_MODE_READ)
@@ -595,14 +644,14 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
         {
           // may as well flush it now
           Log_DebugPrintf("Flush constant register in guest reg %s to host reg %s", GetRegName(reg),
-                          GetHostRegName(hreg.value()));
-          LoadHostRegWithConstant(hreg.value(), GetConstantRegU32(reg));
+                          GetHostRegName(hreg));
+          LoadHostRegWithConstant(hreg, GetConstantRegU32(reg));
           m_constant_regs_dirty.reset(static_cast<u8>(reg));
           ra.flags |= HR_MODE_WRITE;
         }
         else
         {
-          LoadHostRegFromCPUPointer(hreg.value(), &g_state.regs.r[static_cast<u8>(reg)]);
+          LoadHostRegFromCPUPointer(hreg, &g_state.regs.r[static_cast<u8>(reg)]);
         }
       }
 
@@ -610,7 +659,7 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
       {
         DebugAssert(reg != Reg::zero);
         Log_DebugPrintf("Clearing constant register in guest reg %s due to write mode in %s", GetRegName(reg),
-                        GetHostRegName(hreg.value()));
+                        GetHostRegName(hreg));
 
         ClearConstantReg(reg);
       }
@@ -621,29 +670,29 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
     {
       DebugAssert(!m_load_delay_dirty && (!HasLoadDelay() || !(flags & HR_MODE_WRITE)));
       Log_DebugPrintf("Allocating load delayed guest register %s in host reg %s in %s mode", GetRegName(reg),
-                      GetHostRegName(hreg.value()), GetReadWriteModeString(flags));
+                      GetHostRegName(hreg), GetReadWriteModeString(flags));
       m_load_delay_register = reg;
-      m_load_delay_value_register = hreg.value();
+      m_load_delay_value_register = hreg;
       if (flags & HR_MODE_READ)
-        LoadHostRegFromCPUPointer(hreg.value(), &g_state.load_delay_value);
+        LoadHostRegFromCPUPointer(hreg, &g_state.load_delay_value);
     }
     break;
 
     case HR_TYPE_NEXT_LOAD_DELAY_VALUE:
     {
       Log_DebugPrintf("Allocating next load delayed guest register %s in host reg %s in %s mode", GetRegName(reg),
-                      GetHostRegName(hreg.value()), GetReadWriteModeString(flags));
+                      GetHostRegName(hreg), GetReadWriteModeString(flags));
       m_next_load_delay_register = reg;
-      m_next_load_delay_value_register = hreg.value();
+      m_next_load_delay_value_register = hreg;
       if (flags & HR_MODE_READ)
-        LoadHostRegFromCPUPointer(hreg.value(), &g_state.next_load_delay_value);
+        LoadHostRegFromCPUPointer(hreg, &g_state.next_load_delay_value);
     }
     break;
 
     case HR_TYPE_TEMP:
     {
       DebugAssert(!(flags & (HR_MODE_READ | HR_MODE_WRITE)));
-      Log_DebugPrintf("Allocate host reg %s as temporary", GetHostRegName(hreg.value()));
+      Log_DebugPrintf("Allocate host reg %s as temporary", GetHostRegName(hreg));
     }
     break;
 
@@ -652,7 +701,7 @@ u32 CPU::NewRec::Compiler::AllocateHostReg(u32 flags, HostRegAllocType type /* =
       break;
   }
 
-  return hreg.value();
+  return hreg;
 }
 
 std::optional<u32> CPU::NewRec::Compiler::CheckHostReg(u32 flags, HostRegAllocType type /* = HR_TYPE_TEMP */,
@@ -691,15 +740,13 @@ std::optional<u32> CPU::NewRec::Compiler::CheckHostReg(u32 flags, HostRegAllocTy
     if (flags & HR_CALLEE_SAVED && !(ra.flags & HR_CALLEE_SAVED))
     {
       // Need to move it to one which is
-      std::optional<u32> hreg = GetFreeHostReg(HR_CALLEE_SAVED);
-      if (!hreg.has_value())
-        Panic("RA failed");
+      const u32 new_reg = GetFreeHostReg(HR_CALLEE_SAVED);
+      Log_DebugPrintf("Rename host reg %s to %s for callee saved", GetHostRegName(i), GetHostRegName(new_reg));
 
-      Log_DebugPrintf("Rename host reg %s to %s for callee saved", GetHostRegName(i), GetHostRegName(hreg.value()));
-
-      std::swap(m_host_regs[i], m_host_regs[hreg.value()]);
+      CopyHostReg(new_reg, i);
+      std::swap(m_host_regs[i], m_host_regs[new_reg]);
       DebugAssert(!IsHostRegAllocated(i));
-      i = hreg.value();
+      return new_reg;
     }
 
     return i;
@@ -868,6 +915,64 @@ void CPU::NewRec::Compiler::DeleteMIPSReg(Reg reg, bool flush)
   if (flush)
     FlushConstantReg(reg);
   ClearConstantReg(reg);
+}
+
+bool CPU::NewRec::Compiler::TryRenameMIPSReg(Reg to, Reg from, u32 fromhost, Reg other)
+{
+  // can't rename when in form Rd = Rs op Rt and Rd == Rs or Rd == Rt
+  if (to == from || to == other || !iinfo->RenameTest(from))
+    return false;
+
+  Log_DebugPrintf("Renaming MIPS register %s to %s", GetRegName(from), GetRegName(to));
+
+  if (iinfo->LiveTest(from))
+    FlushHostReg(fromhost);
+
+  // remove all references to renamed-to register
+  DeleteMIPSReg(to, false);
+
+  // and do the actual rename, new register has been modified.
+  m_host_regs[fromhost].reg = to;
+  m_host_regs[fromhost].flags |= HR_MODE_READ | HR_MODE_WRITE;
+  return true;
+}
+
+void CPU::NewRec::Compiler::UpdateHostRegCounters()
+{
+  const InstructionInfo* const info_end = m_block->InstructionsInfo() + m_block->size;
+
+  for (u32 i = 0; i < NUM_HOST_REGS; i++)
+  {
+    HostRegAlloc& ra = m_host_regs[i];
+    if ((ra.flags & (HR_ALLOCATED | HR_NEEDED)) != HR_ALLOCATED)
+      continue;
+
+    // Try not to punt out load delays.
+    if (ra.type != HR_TYPE_CPU_REG)
+    {
+      ra.counter = std::numeric_limits<u16>::max();
+      continue;
+    }
+
+    DebugAssert(IsHostRegAllocated(i));
+    const InstructionInfo* cur = iinfo;
+    const Reg reg = ra.reg;
+    if (!(cur->reg_flags[static_cast<u8>(reg)] & RI_USED))
+    {
+      ra.counter = 0;
+      continue;
+    }
+
+    // order based on the number of instructions until this register is used
+    u16 counter_val = std::numeric_limits<u16>::max();
+    for (; cur != info_end; cur++, counter_val--)
+    {
+      if (cur->ReadsReg(reg))
+        break;
+    }
+
+    ra.counter = counter_val;
+  }
 }
 
 void CPU::NewRec::Compiler::Flush(u32 flags)
@@ -1162,6 +1267,7 @@ void CPU::NewRec::Compiler::CompileBranchDelaySlot(bool dirty_pc /* = true */)
 
   // TODO: Move cycle add before this.
   inst++;
+  iinfo++;
   m_current_instruction_pc += sizeof(Instruction);
   m_current_instruction_branch_delay_slot = true;
   m_compiler_pc += sizeof(Instruction);
@@ -1180,7 +1286,6 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   // TODO: Swap S and T if commutative
   // TODO: For and, treat as zeroing if imm is zero
   // TODO: Optimize slt + bne to cmp + jump
-  // TODO: Rename S to D for sll 0, addi 0, etc.
   // TODO: Prefer memory operands when load delay is dirty, since we're going to invalidate immediately after the first
   // instruction..
   // TODO: andi with zero -> zero const
@@ -1261,6 +1366,8 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
     return;
   }
 
+  UpdateHostRegCounters();
+
   if (tflags & TF_CAN_SWAP_DELAY_SLOT && TrySwapDelaySlot(cf.MipsS(), cf.MipsT()))
     cf.delay_slot_swapped = true;
 
@@ -1338,13 +1445,19 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   {
     if (tflags & TF_WRITES_D && rd != Reg::zero)
     {
-      cf.host_d = AllocateHostReg(HR_MODE_WRITE, write_type, rd);
+      if (tflags & TF_READS_S && cf.valid_host_s && TryRenameMIPSReg(rd, rs, cf.host_s, Reg::count))
+        cf.host_d = cf.host_s;
+      else
+        cf.host_d = AllocateHostReg(HR_MODE_WRITE, write_type, rd);
       cf.valid_host_d = true;
     }
 
     if (tflags & TF_WRITES_T && rt != Reg::zero)
     {
-      cf.host_t = AllocateHostReg(HR_MODE_WRITE, write_type, rt);
+      if (tflags & TF_READS_S && cf.valid_host_s && TryRenameMIPSReg(rt, rs, cf.host_s, Reg::count))
+        cf.host_t = cf.host_s;
+      else
+        cf.host_t = AllocateHostReg(HR_MODE_WRITE, write_type, rt);
       cf.valid_host_t = true;
     }
 
@@ -1365,9 +1478,18 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(void (Compiler::*func)(Comp
   CompileFlags cf = {};
 
   if (tflags & TF_READS_S)
+  {
+    MarkRegsNeeded(HR_TYPE_CPU_REG, rs);
     cf.mips_s = static_cast<u8>(rs);
+  }
   if (tflags & (TF_READS_T | TF_WRITES_T))
+  {
+    if (tflags & TF_READS_T)
+      MarkRegsNeeded(HR_TYPE_CPU_REG, rt);
     cf.mips_t = static_cast<u8>(rt);
+  }
+
+  UpdateHostRegCounters();
 
   // constant address?
   // TODO: move this to the backend address calculation?
