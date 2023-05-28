@@ -534,7 +534,7 @@ void CPU::NewRec::AArch64Compiler::EndBlockWithException(Exception excode)
 {
   // flush regs, but not pc, it's going to get overwritten
   // flush cycles because of the GTE instruction stuff...
-  Flush(FLUSH_END_BLOCK);
+  Flush(FLUSH_END_BLOCK | FLUSH_FOR_EXCEPTION);
 
   // TODO: flush load delay
   // TODO: break for pcdrv
@@ -565,7 +565,7 @@ void CPU::NewRec::AArch64Compiler::EndAndLinkBlock(const std::optional<u32>& new
   armAsm->ldr(RWARG1, PTR(&g_state.pending_ticks));
   armAsm->ldr(RWARG2, PTR(&g_state.downcount));
   if (cycles > 0)
-    armAsm->add(RWARG1, RWARG1, armCheckAddSubConstant(m_cycles));
+    armAsm->add(RWARG1, RWARG1, armCheckAddSubConstant(cycles));
   armAsm->cmp(RWARG1, RWARG2);
   if (cycles > 0)
     armAsm->str(RWARG1, PTR(&g_state.pending_ticks));

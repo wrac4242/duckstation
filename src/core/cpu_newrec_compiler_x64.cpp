@@ -251,7 +251,7 @@ void CPU::NewRec::X64Compiler::SwitchToNearCode(bool emit_jump, void (Xbyak::Cod
 void CPU::NewRec::X64Compiler::BeginBlock()
 {
   Compiler::BeginBlock();
-#if 1
+#if 0
   cg->call(&CPU::CodeCache::LogCurrentState);
 #endif
 
@@ -288,7 +288,7 @@ void CPU::NewRec::X64Compiler::EndBlockWithException(Exception excode)
 {
   // flush regs, but not pc, it's going to get overwritten
   // flush cycles because of the GTE instruction stuff...
-  Flush(FLUSH_END_BLOCK);
+  Flush(FLUSH_END_BLOCK | FLUSH_FOR_EXCEPTION);
 
   // TODO: flush load delay
   // TODO: break for pcdrv
@@ -317,7 +317,7 @@ void CPU::NewRec::X64Compiler::EndAndLinkBlock(const std::optional<u32>& newpc)
   // if (pending_ticks >= downcount) { dispatch_event(); }
   cg->mov(RWARG1, cg->dword[PTR(&g_state.pending_ticks)]);
   if (cycles > 0)
-    cg->add(RWARG1, m_cycles);
+    cg->add(RWARG1, cycles);
   cg->cmp(RWARG1, cg->dword[PTR(&g_state.downcount)]);
   if (cycles > 0)
     cg->mov(cg->dword[PTR(&g_state.pending_ticks)], RWARG1);
@@ -1357,7 +1357,7 @@ void CPU::NewRec::X64Compiler::GenerateLoad(const Xbyak::Reg32& addr_reg, Memory
 
     // flush regs, but not pc, it's going to get overwritten
     // flush cycles because of the GTE instruction stuff...
-    Flush(FLUSH_END_BLOCK);
+    Flush(FLUSH_FOR_C_CALL | FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_EXCEPTION);
 
     // cause_bits = (-result << 2) | BD | cop_n
     cg->mov(RWARG1, RWRET);
@@ -1467,7 +1467,7 @@ void CPU::NewRec::X64Compiler::GenerateStore(const Xbyak::Reg32& addr_reg, const
 
     // flush regs, but not pc, it's going to get overwritten
     // flush cycles because of the GTE instruction stuff...
-    Flush(FLUSH_END_BLOCK);
+    Flush(FLUSH_FOR_C_CALL | FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_EXCEPTION);
 
     // cause_bits = (result << 2) | BD | cop_n
     cg->mov(RWARG1, RWRET);
