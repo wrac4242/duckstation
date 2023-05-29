@@ -293,10 +293,10 @@ void ClearState()
 
 void Shutdown()
 {
-  CPU::NewRec::Shutdown();
   ClearState();
 
 #ifdef WITH_RECOMPILER
+  CPU::NewRec::Shutdown();
   ShutdownFastmem();
   FreeFastMap();
   s_code_buffer.Destroy();
@@ -447,10 +447,13 @@ static void ExecuteRecompiler()
   g_state.npc = g_state.pc;
 }
 
+#endif
+
 [[noreturn]] void Execute()
 {
   switch (g_settings.cpu_execution_mode)
   {
+#ifdef WITH_RECOMPILER
     case CPUExecutionMode::Recompiler:
       ExecuteRecompiler();
       break;
@@ -458,6 +461,7 @@ static void ExecuteRecompiler()
     case CPUExecutionMode::NewRec:
       NewRec::Execute();
       break;
+#endif
 
     default:
     {
@@ -477,6 +481,8 @@ static void ExecuteRecompiler()
   }
 }
 
+#ifdef WITH_RECOMPILER
+
 JitCodeBuffer& GetCodeBuffer()
 {
   return s_code_buffer;
@@ -486,9 +492,8 @@ JitCodeBuffer& GetCodeBuffer()
 
 void Reinitialize()
 {
-  CPU::NewRec::Shutdown();
-
 #ifdef WITH_RECOMPILER
+  CPU::NewRec::Shutdown();
 
   ShutdownFastmem();
   s_code_buffer.Destroy();
@@ -525,12 +530,14 @@ void Reinitialize()
 
 void Flush()
 {
+#ifdef WITH_RECOMPILER
   if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
   {
     s_code_buffer.Reset();
     CPU::NewRec::Reset();
     return;
   }
+#endif
 
   ClearState();
 #ifdef WITH_RECOMPILER
@@ -944,7 +951,9 @@ void InvalidateBlocksWithPageIndex(u32 page_index)
   for (CodeBlock* block : blocks)
     InvalidateBlock(block, true);
 
+#ifdef WITH_RECOMPILER
   NewRec::InvalidateBlocksWithPageNumber(page_index);
+#endif
 
   // Block will be re-added next execution.
   blocks.clear();

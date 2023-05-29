@@ -18,6 +18,8 @@ struct fastjmp_buf
   static constexpr std::size_t BUF_SIZE = 64;
 #elif defined(_M_IX86) || defined(__i386__)
   static constexpr std::size_t BUF_SIZE = 24;
+#elif defined(__riscv) && __riscv_xlen == 64
+  static constexpr std::size_t BUF_SIZE = 208;
 #else
 #error Unknown architecture.
 #endif
