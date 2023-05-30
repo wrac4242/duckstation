@@ -108,11 +108,6 @@ add_library(core
 )
 
 set(RECOMPILER_SRCS
-    cpu_newrec.cpp
-    cpu_newrec.h
-    cpu_newrec_compiler.cpp
-    cpu_newrec_compiler.h
-    cpu_newrec_private.h
     cpu_recompiler_code_generator.cpp
     cpu_recompiler_code_generator.h
     cpu_recompiler_code_generator_generic.cpp
@@ -120,6 +115,14 @@ set(RECOMPILER_SRCS
     cpu_recompiler_register_cache.h
     cpu_recompiler_thunks.h
     cpu_recompiler_types.h
+)
+
+set(NEWREC_SOURCES
+    cpu_newrec.cpp
+    cpu_newrec.h
+    cpu_newrec_compiler.cpp
+    cpu_newrec_compiler.h
+    cpu_newrec_private.h
 )
 
 target_include_directories(core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
@@ -158,8 +161,8 @@ endif()
 
 if(${CPU_ARCH} STREQUAL "x64")
   target_include_directories(core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../../dep/xbyak/xbyak")
-  target_compile_definitions(core PUBLIC "WITH_RECOMPILER=1" "WITH_MMAP_FASTMEM=1")
-  target_sources(core PRIVATE ${RECOMPILER_SRCS}
+  target_compile_definitions(core PUBLIC "WITH_RECOMPILER=1" "WITH_NEWREC=1" "WITH_MMAP_FASTMEM=1")
+  target_sources(core PRIVATE ${RECOMPILER_SRCS} ${NEWREC_SOURCES}
     cpu_newrec_compiler_x64.cpp
     cpu_newrec_compiler_x64.h
     cpu_recompiler_code_generator_x64.cpp
@@ -173,18 +176,26 @@ elseif(${CPU_ARCH} STREQUAL "aarch32")
   target_link_libraries(core PUBLIC vixl)
   message("Building AArch32 recompiler")
 elseif(${CPU_ARCH} STREQUAL "aarch64")
-  target_compile_definitions(core PUBLIC "WITH_RECOMPILER=1")
+  target_compile_definitions(core PUBLIC "WITH_RECOMPILER=1" "WITH_NEWREC=1")
   if (NOT APPLE)
     # Disabled until we support 16K pages.
     target_compile_definitions(core PUBLIC "WITH_MMAP_FASTMEM=1")
   endif()
-  target_sources(core PRIVATE ${RECOMPILER_SRCS}
+  target_sources(core PRIVATE ${RECOMPILER_SRCS} ${NEWREC_SOURCES}
     cpu_newrec_compiler_aarch64.cpp
     cpu_newrec_compiler_aarch64.h
     cpu_recompiler_code_generator_aarch64.cpp
   )
   target_link_libraries(core PUBLIC vixl)
   message("Building AArch64 recompiler")
+elseif(${CPU_ARCH} STREQUAL "riscv64")
+  target_compile_definitions(core PUBLIC "WITH_NEWREC=1")
+  target_sources(core PRIVATE ${NEWREC_SOURCES}
+    cpu_newrec_compiler_riscv64.cpp
+    cpu_newrec_compiler_riscv64.h
+  )
+  target_link_libraries(core PUBLIC biscuit::biscuit riscv-disas)
+  message("Building RISC-V 64-bit recompiler")
 else()
   message("Not building recompiler")
 endif()

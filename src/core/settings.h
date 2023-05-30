@@ -255,10 +255,12 @@ struct Settings
   bool log_to_file = false;
 
   ALWAYS_INLINE bool IsUsingCodeCache() const { return (cpu_execution_mode != CPUExecutionMode::Interpreter); }
-  ALWAYS_INLINE bool IsUsingRecompiler() const
+  ALWAYS_INLINE bool IsUsingAnyRecompiler() const
   {
     return (cpu_execution_mode == CPUExecutionMode::Recompiler || cpu_execution_mode == CPUExecutionMode::NewRec);
   }
+  ALWAYS_INLINE bool IsUsingRecompiler() const { return (cpu_execution_mode == CPUExecutionMode::Recompiler); }
+  ALWAYS_INLINE bool IsUsingNewRec() const { return (cpu_execution_mode == CPUExecutionMode::NewRec); }
   ALWAYS_INLINE bool IsUsingSoftwareRenderer() const { return (gpu_renderer == GPURenderer::Software); }
   ALWAYS_INLINE bool IsRunaheadEnabled() const { return (runahead_frames > 0); }
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "cpu_newrec.h"
 #include "bus.h"
 #include "common/align.h"
@@ -9,6 +12,7 @@
 #include "cpu_newrec_private.h"
 #include "cpu_types.h"
 #include "settings.h"
+#include "util/page_fault_handler.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -26,6 +30,7 @@ static void InvalidCodeFunction();
 
 static void AllocateLUTs();
 static void ResetLUTs();
+static void InvalidateBlock(Block* block);
 static void ClearBlocks();
 static void CompileASMFunctions();
 
@@ -35,6 +40,10 @@ static void SetRegAccess(InstructionInfo* inst, Reg reg, bool write);
 static void AddBlockToPageList(Block* block);
 static void BacklinkBlocks(u32 pc, const void* dst);
 static void UnlinkBlockExits(Block* block);
+
+static bool InitializeFastmem();
+static void ShutdownFastmem();
+static Common::PageFaultHandler::HandlerResult PageFaultHandler(void* exception_pc, void* fault_address, bool is_write);
 
 // Fast map provides lookup from PC to function
 // Function pointers are offset so that you don't need to subtract
@@ -412,6 +421,9 @@ bool CPU::NewRec::Initialize()
   CompileASMFunctions();
   ResetLUTs();
 
+  if (g_settings.IsUsingFastmem() && !InitializeFastmem())
+    return false;
+
   return true;
 }
 
@@ -421,11 +433,33 @@ void CPU::NewRec::Shutdown()
     return;
 
   ClearBlocks();
+  ShutdownFastmem();
 }
 
 void CPU::NewRec::Execute()
 {
   reinterpret_cast<void (*)()>(const_cast<void*>(g_enter_recompiler))();
+}
+
+void CPU::NewRec::InvalidateBlock(Block* block)
+{
+  if (block->invalidated)
+    return;
+
+  SetFastMap(block->pc, g_compile_or_revalidate_block);
+  BacklinkBlocks(block->pc, g_compile_or_revalidate_block);
+  block->invalidated = true;
+}
+
+void CPU::NewRec::InvalidateAllBlocks()
+{
+  // TODO: maybe combine the backlink into one big instruction flush cache?
+
+  for (Block* block : s_blocks)
+    InvalidateBlock(block);
+
+  // TODO: check the asm for this
+  s_page_block_lookup = {};
 }
 
 void CPU::NewRec::InvalidateBlocksWithPageNumber(u32 index)
@@ -435,12 +469,7 @@ void CPU::NewRec::InvalidateBlocksWithPageNumber(u32 index)
   Block* block = s_page_block_lookup[index].first;
   while (block)
   {
-    if (!block->invalidated)
-    {
-      SetFastMap(block->pc, g_compile_or_revalidate_block);
-      BacklinkBlocks(block->pc, g_compile_or_revalidate_block);
-      block->invalidated = true;
-    }
+    InvalidateBlock(block);
 
     Block* next_block = block->next_block_in_page;
     block->next_block_in_page = nullptr;
@@ -477,6 +506,34 @@ void CPU::NewRec::Reset()
   ClearBlocks();
   CompileASMFunctions();
   ResetLUTs();
+
+  if (g_settings.IsUsingFastmem())
+    CPU::UpdateFastmemBase();
+}
+
+bool CPU::NewRec::InitializeFastmem()
+{
+  const CPUFastmemMode mode = g_settings.cpu_fastmem_mode;
+  Assert(mode == CPUFastmemMode::MMap);
+
+  JitCodeBuffer& buffer = CodeCache::GetCodeBuffer();
+  if (!Common::PageFaultHandler::InstallHandler(&g_fast_map, buffer.GetCodePointer(), buffer.GetTotalSize(),
+                                                &PageFaultHandler))
+  {
+    Log_ErrorPrintf("Failed to install page fault handler");
+    return false;
+  }
+
+  Bus::UpdateFastmemViews(mode);
+  CPU::UpdateFastmemBase();
+  return true;
+}
+
+void CPU::NewRec::ShutdownFastmem()
+{
+  Common::PageFaultHandler::RemoveHandler(&g_fast_map);
+  Bus::UpdateFastmemViews(CPUFastmemMode::Disabled);
+  CPU::UpdateFastmemBase();
 }
 
 void CPU::NewRec::AddLoadStoreInfo(void* code_address, u32 code_size, u32 guest_pc, TickCount cycles, u32 gpr_bitmask,
@@ -496,15 +553,31 @@ void CPU::NewRec::AddLoadStoreInfo(void* code_address, u32 code_size, u32 guest_
   s_fastmem_backpatch_info.emplace(code_address, info);
 }
 
-bool CPU::NewRec::BackpatchLoadStore(void* code_address, u32 guest_address)
+Common::PageFaultHandler::HandlerResult CPU::NewRec::PageFaultHandler(void* exception_pc, void* fault_address,
+                                                                      bool is_write)
 {
-  auto iter = s_fastmem_backpatch_info.find(code_address);
+  if (static_cast<u8*>(fault_address) < g_state.fastmem_base ||
+      (static_cast<u8*>(fault_address) - g_state.fastmem_base) >= static_cast<ptrdiff_t>(Bus::FASTMEM_REGION_SIZE))
+  {
+    return Common::PageFaultHandler::HandlerResult::ExecuteNextHandler;
+  }
+
+  const PhysicalMemoryAddress guest_address =
+    static_cast<PhysicalMemoryAddress>(static_cast<ptrdiff_t>(static_cast<u8*>(fault_address) - g_state.fastmem_base));
+
+  Log_DevPrintf("Page fault handler invoked at PC=%p Address=%p %s, fastmem offset 0x%08X", exception_pc, fault_address,
+                is_write ? "(write)" : "(read)", guest_address);
+
+  auto iter = s_fastmem_backpatch_info.find(exception_pc);
   if (iter == s_fastmem_backpatch_info.end())
-    return false;
+  {
+    Log_ErrorPrintf("No backpatch info found for %p", exception_pc);
+    return Common::PageFaultHandler::HandlerResult::ExecuteNextHandler;
+  }
 
   const LoadstoreBackpatchInfo& info = iter->second;
   Log_DevPrintf("Backpatching %s at %p[%u] (pc %08X addr %08X): Bitmask %08X Addr %u Data %u Size %u Signed %02X",
-                info.is_load ? "load" : "store", code_address, info.code_size, info.guest_pc, guest_address,
+                info.is_load ? "load" : "store", exception_pc, info.code_size, info.guest_pc, guest_address,
                 info.gpr_bitmask, info.address_register, info.data_register, info.AccessSizeInBytes(), info.is_signed);
 
   // remove the cycles we added for the memory read, then take them off again after the backpatch
@@ -516,7 +589,7 @@ bool CPU::NewRec::BackpatchLoadStore(void* code_address, u32 guest_address)
 
   JitCodeBuffer& buffer = CodeCache::GetCodeBuffer();
   const u32 thunk_size =
-    BackpatchLoadStore(buffer.GetFreeFarCodePointer(), buffer.GetFreeFarCodeSpace(), code_address, info.code_size,
+    BackpatchLoadStore(buffer.GetFreeFarCodePointer(), buffer.GetFreeFarCodeSpace(), exception_pc, info.code_size,
                        cycles_to_add, cycles_to_remove, info.gpr_bitmask, info.address_register, info.data_register,
                        info.AccessSize(), info.is_signed, info.is_load);
   buffer.CommitFarCode(thunk_size);
@@ -526,7 +599,7 @@ bool CPU::NewRec::BackpatchLoadStore(void* code_address, u32 guest_address)
   // and store the pc in the faulting list, so that we don't emit another fastmem loadstore
   s_fastmem_faulting_pcs.insert(info.guest_pc);
   s_fastmem_backpatch_info.erase(iter);
-  return true;
+  return Common::PageFaultHandler::HandlerResult::ContinueExecution;
 }
 
 // TODO: move this into the compiler
@@ -623,7 +696,7 @@ void CPU::NewRec::FillBlockRegInfo(Block* block)
   InstructionInfo* inst = start + (block->size - 1);
   std::memset(inst->reg_flags, RI_LIVE, sizeof(inst->reg_flags));
   std::memset(inst->read_reg, 0, sizeof(inst->read_reg));
-  //std::memset(inst->write_reg, 0, sizeof(inst->write_reg));
+  // std::memset(inst->write_reg, 0, sizeof(inst->write_reg));
 
   while (inst != start)
   {

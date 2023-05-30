@@ -2028,8 +2028,7 @@ void CPU::NewRec::AArch64Compiler::Compile_rfe(CompileFlags cf)
 {
   // shift mode bits right two, preserving upper bits
   armAsm->ldr(RWARG1, PTR(&g_state.cop0_regs.sr.bits));
-  armAsm->ubfx(RWARG2, RWARG1, 2, 4);
-  armAsm->bfi(RWARG1, RWARG2, 0, 4);
+  armAsm->bfxil(RWARG2, RWARG1, 2, 4);
   armAsm->str(RWARG1, PTR(&g_state.cop0_regs.sr.bits));
 
   TestInterrupts(RWARG1);
@@ -2218,7 +2217,7 @@ u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
 
     // TODO: this _shouldn't_ be necessary, because if we're flagging IRQ, then downcount should get restored.
     armAsm->bind(&update_downcount);
-    armAsm->ldr(RWARG1, PTR(&g_state.downcount));
+    armAsm->str(RWARG1, PTR(&g_state.downcount));
 
     armAsm->bind(&check_interrupts);
 

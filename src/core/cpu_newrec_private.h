@@ -121,7 +121,6 @@ void SetFastMap(u32 pc, const void* function);
 
 void AddLoadStoreInfo(void* code_address, u32 code_size, u32 guest_pc, TickCount cycles, u32 gpr_bitmask,
                       u8 address_register, u8 data_register, MemoryAccessSize size, bool is_signed, bool is_load);
-bool BackpatchLoadStore(void* code_address, u32 guest_address);
 u32 BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* code_address, u32 code_size, TickCount cycles_to_add,
                        TickCount cycles_to_remove, u32 gpr_bitmask, u8 address_register, u8 data_register,
                        MemoryAccessSize size, bool is_signed, bool is_load);

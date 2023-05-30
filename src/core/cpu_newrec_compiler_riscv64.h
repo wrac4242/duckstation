@@ -54,10 +54,8 @@ protected:
   void Compile_ori(CompileFlags cf) override;
   void Compile_xori(CompileFlags cf) override;
 
-#if 0
-  void Compile_shift(CompileFlags cf, void (vixl::aarch64::Assembler::*op)(const vixl::aarch64::Register&,
-                                                                           const vixl::aarch64::Register&, unsigned));
-#endif
+  void Compile_shift(CompileFlags cf, void (biscuit::Assembler::*op)(biscuit::GPR, biscuit::GPR, biscuit::GPR),
+                     void (biscuit::Assembler::*op_const)(biscuit::GPR, biscuit::GPR, unsigned));
   void Compile_sll(CompileFlags cf) override;
   void Compile_srl(CompileFlags cf) override;
   void Compile_sra(CompileFlags cf) override;
@@ -72,13 +70,9 @@ protected:
   void Compile_div(CompileFlags cf) override;
   void Compile_divu(CompileFlags cf) override;
   void TestOverflow(const biscuit::GPR& result);
-#if 0
-  void Compile_dst_op(CompileFlags cf,
-                      void (vixl::aarch64::Assembler::*op)(const vixl::aarch64::Register&,
-                                                           const vixl::aarch64::Register&,
-                                                           const vixl::aarch64::Operand&),
-                      bool commutative, bool logical, bool overflow);
-#endif
+  void Compile_dst_op(CompileFlags cf, void (biscuit::Assembler::*op)(biscuit::GPR, biscuit::GPR, biscuit::GPR),
+                      void (RISCV64Compiler::*op_const)(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm),
+                      bool commutative, bool overflow);
   void Compile_add(CompileFlags cf) override;
   void Compile_addu(CompileFlags cf) override;
   void Compile_sub(CompileFlags cf) override;
@@ -122,10 +116,10 @@ private:
   void EmitMov(const biscuit::GPR& dst, u32 val);
   void EmitCall(const void* ptr);
 
-  void SwitchToFarCode(bool emit_jump, void (biscuit::Assembler::*cond)(biscuit::GPR, biscuit::GPR) = nullptr,
+  void SwitchToFarCode(bool emit_jump,
+                       void (biscuit::Assembler::*inverted_cond)(biscuit::GPR, biscuit::GPR, biscuit::Label*) = nullptr,
                        const biscuit::GPR& rs1 = biscuit::zero, const biscuit::GPR& rs2 = biscuit::zero);
-  void SwitchToNearCode(bool emit_jump, void (biscuit::Assembler::*cond)(biscuit::GPR, biscuit::GPR) = nullptr,
-                        const biscuit::GPR& rs1 = biscuit::zero, const biscuit::GPR& rs2 = biscuit::zero);
+  void SwitchToNearCode(bool emit_jump);
 
   void AssertRegOrConstS(CompileFlags cf) const;
   void AssertRegOrConstT(CompileFlags cf) const;
@@ -135,14 +129,23 @@ private:
                         void (biscuit::Assembler::*iop)(biscuit::GPR, biscuit::GPR, u32),
                         void (biscuit::Assembler::*rop)(biscuit::GPR, biscuit::GPR, biscuit::GPR));
 
-  void SafeADDI(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 val);
-
+  void SafeADDIW(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm);
+  void SafeSUBIW(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm);
   void SafeANDI(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm);
   void SafeORI(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm);
   void SafeXORI(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm);
+  void SafeSLTI(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm);
+  void SafeSLTIU(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm);
 
-  void SExtH(const biscuit::GPR& rd, const biscuit::GPR& rs);
-  void UExtH(const biscuit::GPR& rd, const biscuit::GPR& rs);
+  void EmitSExtB(const biscuit::GPR& rd, const biscuit::GPR& rs);
+  void EmitUExtB(const biscuit::GPR& rd, const biscuit::GPR& rs);
+  void EmitSExtH(const biscuit::GPR& rd, const biscuit::GPR& rs);
+  void EmitUExtH(const biscuit::GPR& rd, const biscuit::GPR& rs);
+  void EmitDSExtW(const biscuit::GPR& rd, const biscuit::GPR& rs);
+  void EmitDUExtW(const biscuit::GPR& rd, const biscuit::GPR& rs);
+
+  biscuit::GPR CFGetSafeRegS(CompileFlags cf, const biscuit::GPR& temp_reg);
+  biscuit::GPR CFGetSafeRegT(CompileFlags cf, const biscuit::GPR& temp_reg);
 
   biscuit::GPR CFGetRegD(CompileFlags cf) const;
   biscuit::GPR CFGetRegS(CompileFlags cf) const;

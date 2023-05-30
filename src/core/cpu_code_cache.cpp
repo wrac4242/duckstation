@@ -29,7 +29,7 @@ static constexpr u32 RECOMPILE_FRAMES_TO_FALL_BACK_TO_INTERPRETER = 100;
 static constexpr u32 RECOMPILE_COUNT_TO_FALL_BACK_TO_INTERPRETER = 20;
 static constexpr u32 INVALIDATE_THRESHOLD_TO_DISABLE_LINKING = 10;
 
-#ifdef WITH_RECOMPILER
+#if defined(WITH_RECOMPILER) || defined(WITH_NEWREC)
 
 // Currently remapping the code buffer doesn't work in macOS or Haiku.
 #if !defined(__HAIKU__) && !defined(__APPLE__)
@@ -53,6 +53,10 @@ alignas(Recompiler::CODE_STORAGE_ALIGNMENT) static u8
 #endif
 
 static JitCodeBuffer s_code_buffer;
+
+#endif
+
+#ifdef WITH_RECOMPILER
 static FastMapTable s_fast_map[FAST_MAP_TABLE_COUNT];
 static std::unique_ptr<CodeBlock::HostCodePointer[]> s_fast_map_pointers;
 
@@ -243,8 +247,8 @@ void Initialize()
 {
   Assert(s_blocks.empty());
 
-#ifdef WITH_RECOMPILER
-  if (g_settings.IsUsingRecompiler())
+#if defined(WITH_RECOMPILER) || defined(WITH_NEWREC)
+  if (g_settings.IsUsingAnyRecompiler())
   {
 #ifdef USE_STATIC_CODE_BUFFER
     const bool has_buffer = s_code_buffer.Initialize(s_code_storage, sizeof(s_code_storage),
@@ -256,20 +260,28 @@ void Initialize()
     {
       Panic("Failed to initialize code space");
     }
+  }
+#endif
 
+#ifdef WITH_NEWREC
+  if (g_settings.IsUsingNewRec())
+  {
+    if (!CPU::NewRec::Initialize())
+      Panic("Failed to initialize newrec");
+
+    return;
+  }
+#endif
+
+#ifdef WITH_RECOMPILER
+  if (g_settings.IsUsingRecompiler())
+  {
     if (g_settings.IsUsingFastmem() && !InitializeFastmem())
       Panic("Failed to initialize fastmem");
 
-    if (g_settings.cpu_execution_mode == CPUExecutionMode::Recompiler)
-    {
-      AllocateFastMap();
-      CompileDispatcher();
-      ResetFastMap();
-    }
-    else if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
-    {
-      CPU::NewRec::Initialize();
-    }
+    AllocateFastMap();
+    CompileDispatcher();
+    ResetFastMap();
   }
 #endif
 }
@@ -293,10 +305,13 @@ void ClearState()
 
 void Shutdown()
 {
+#ifdef WITH_NEWREC
+  NewRec::Shutdown();
+#endif
+
   ClearState();
 
 #ifdef WITH_RECOMPILER
-  CPU::NewRec::Shutdown();
   ShutdownFastmem();
   FreeFastMap();
   s_code_buffer.Destroy();
@@ -457,9 +472,11 @@ static void ExecuteRecompiler()
     case CPUExecutionMode::Recompiler:
       ExecuteRecompiler();
       break;
+#endif
 
+#ifdef WITH_NEWREC
     case CPUExecutionMode::NewRec:
-      NewRec::Execute();
+      CPU::NewRec::Execute();
       break;
 #endif
 
@@ -481,7 +498,7 @@ static void ExecuteRecompiler()
   }
 }
 
-#ifdef WITH_RECOMPILER
+#if defined(WITH_RECOMPILER) || defined(WITH_NEWREC)
 
 JitCodeBuffer& GetCodeBuffer()
 {
@@ -492,15 +509,19 @@ JitCodeBuffer& GetCodeBuffer()
 
 void Reinitialize()
 {
-#ifdef WITH_RECOMPILER
-  CPU::NewRec::Shutdown();
+#ifdef WITH_NEWREC
+  NewRec::Shutdown();
+#endif
 
+#ifdef WITH_RECOMPILER
   ShutdownFastmem();
+#endif
+
+#if defined(WITH_RECOMPILER) || defined(WITH_NEWREC)
   s_code_buffer.Destroy();
 
-  if (g_settings.IsUsingRecompiler())
+  if (g_settings.IsUsingAnyRecompiler())
   {
-
 #ifdef USE_STATIC_CODE_BUFFER
     if (!s_code_buffer.Initialize(s_code_storage, sizeof(s_code_storage), RECOMPILER_FAR_CODE_CACHE_SIZE,
                                   RECOMPILER_GUARD_SIZE))
@@ -510,31 +531,37 @@ void Reinitialize()
     {
       Panic("Failed to initialize code space");
     }
+  }
+#endif
 
+#ifdef WITH_NEWREC
+  if (g_settings.IsUsingNewRec())
+  {
+    if (!CPU::NewRec::Initialize())
+      Panic("Failed to reinitialize NewRec");
+  }
+#endif
+
+#ifdef WITH_RECOMPILER
+  if (g_settings.IsUsingRecompiler())
+  {
     if (g_settings.IsUsingFastmem() && !InitializeFastmem())
       Panic("Failed to initialize fastmem");
 
-    if (g_settings.cpu_execution_mode == CPUExecutionMode::Recompiler)
-    {
-      AllocateFastMap();
-      CompileDispatcher();
-      ResetFastMap();
-    }
-    else if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
-    {
-      CPU::NewRec::Initialize();
-    }
+    AllocateFastMap();
+    CompileDispatcher();
+    ResetFastMap();
   }
 #endif
 }
 
 void Flush()
 {
-#ifdef WITH_RECOMPILER
-  if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
+#ifdef WITH_NEWREC
+  if (g_settings.IsUsingNewRec())
   {
     s_code_buffer.Reset();
-    CPU::NewRec::Reset();
+    NewRec::Reset();
     return;
   }
 #endif
@@ -608,9 +635,6 @@ CodeBlock* LookupBlock(CodeBlockKey key, bool allow_flush)
     else
       return nullptr;
   }
-
-  // NewRec::X64Compiler nrc;
-  // nrc.CompileBlock(key.GetPC());
 
   CodeBlock* block = new CodeBlock(key);
   block->recompile_frame_number = System::GetFrameNumber();
@@ -946,14 +970,18 @@ static void InvalidateBlock(CodeBlock* block, bool allow_frame_invalidation)
 
 void InvalidateBlocksWithPageIndex(u32 page_index)
 {
+#ifdef WITH_NEWREC
+  if (g_settings.IsUsingNewRec())
+  {
+    NewRec::InvalidateBlocksWithPageNumber(page_index);
+    return;
+  }
+#endif
+
   DebugAssert(page_index < Bus::RAM_8MB_CODE_PAGE_COUNT);
   auto& blocks = m_ram_block_map[page_index];
   for (CodeBlock* block : blocks)
     InvalidateBlock(block, true);
-
-#ifdef WITH_RECOMPILER
-  NewRec::InvalidateBlocksWithPageNumber(page_index);
-#endif
 
   // Block will be re-added next execution.
   blocks.clear();
@@ -962,6 +990,14 @@ void InvalidateBlocksWithPageIndex(u32 page_index)
 
 void InvalidateAll()
 {
+#ifdef WITH_NEWREC
+  if (g_settings.IsUsingNewRec())
+  {
+    NewRec::InvalidateAllBlocks();
+    return;
+  }
+#endif
+
   for (auto& it : s_blocks)
   {
     CodeBlock* block = it.second;
@@ -1175,13 +1211,6 @@ Common::PageFaultHandler::HandlerResult MMapPageFaultHandler(void* exception_pc,
 
   Log_DevPrintf("Page fault handler invoked at PC=%p Address=%p %s, fastmem offset 0x%08X", exception_pc, fault_address,
                 is_write ? "(write)" : "(read)", fastmem_address);
-
-  if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
-  {
-    return CPU::NewRec::BackpatchLoadStore(exception_pc, fastmem_address) ?
-             Common::PageFaultHandler::HandlerResult::ContinueExecution :
-             Common::PageFaultHandler::HandlerResult::ExecuteNextHandler;
-  }
 
   // use upper_bound to find the next block after the pc
   HostCodeMap::iterator upper_iter =

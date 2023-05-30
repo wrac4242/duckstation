@@ -36,7 +36,7 @@ using namespace biscuit;
 // For LW/SW/etc.
 #define PTR(x) ((u32)(((u8*)(x)) - ((u8*)&g_state))), RSTATE
 
-static constexpr u32 TRAMPOLINE_AREA_SIZE = 4 * 1024;
+static constexpr u32 BLOCK_LINK_SIZE = 8; // auipc+jr
 
 namespace CPU::CodeCache {
 void LogCurrentState();
@@ -51,34 +51,63 @@ static constexpr bool rvIsCallerSavedRegister(u32 id)
 }
 
 static void rvDisassembleAndDumpCode(const void* ptr, size_t size);
+static u32 rvGetHostInstructionCount(const void* ptr, size_t size);
 static void rvFlushInstructionCache(void* start, u32 size);
-#if 0
-static s64 rvGetPCDisplacement(const void* current, const void* target);
-#endif
+static bool rvIsValidSExtITypeImm(u32 imm);
 static void rvCheck32BitDisplacement(const void* cur, const void* target);
 static void rvMoveAddressToReg(Assembler* armAsm, const GPR& reg, const void* addr);
 static void rvEmitMov(Assembler* rvAsm, const GPR& rd, u32 imm);
 static void rvEmitJmp(Assembler* armAsm, const void* ptr, const GPR& link_reg = zero);
 static void rvEmitCall(Assembler* armAsm, const void* ptr);
-#if 0
-static void armEmitCondBranch(Assembler* armAsm, vixl::aarch64::Condition cond, const void* ptr);
-static u8* armGetJumpTrampoline(const void* target);
-#endif
+static void rvEmitSExtB(Assembler* rvAsm, const GPR& rd, const GPR& rs);  // -> word
+static void rvEmitUExtB(Assembler* rvAsm, const GPR& rd, const GPR& rs);  // -> word
+static void rvEmitSExtH(Assembler* rvAsm, const GPR& rd, const GPR& rs);  // -> word
+static void rvEmitUExtH(Assembler* rvAsm, const GPR& rd, const GPR& rs);  // -> word
+static void rvEmitDSExtW(Assembler* rvAsm, const GPR& rd, const GPR& rs); // -> doubleword
+static void rvEmitDUExtW(Assembler* rvAsm, const GPR& rd, const GPR& rs); // -> doubleword
 
 RISCV64Compiler s_instance;
 Compiler* g_compiler = &s_instance;
-
-static std::unordered_map<const void*, u32> s_trampoline_targets;
-static u8* s_trampoline_start_ptr;
-static u32 s_trampoline_used;
 } // namespace CPU::NewRec
 
 void CPU::NewRec::rvDisassembleAndDumpCode(const void* ptr, size_t size)
 {
 #ifdef DUMP_BLOCKS
-  // TODO: FIXME
+  const u8* cur = static_cast<const u8*>(ptr);
+  const u8* end = cur + size;
+  char buf[256];
+  while (cur < end)
+  {
+    rv_inst inst;
+    size_t instlen;
+    inst_fetch(cur, &inst, &instlen);
+    disasm_inst(buf, std::size(buf), rv64, static_cast<u64>(reinterpret_cast<uintptr_t>(cur)), inst);
+    Log_DebugPrintf("    %016" PRIX64 "    %s", static_cast<u64>(reinterpret_cast<uintptr_t>(cur)), buf);
+    cur += instlen;
+  }
 #else
   Log_DebugPrintf("Not compiled with DUMP_BLOCKS");
+#endif
+}
+
+u32 CPU::NewRec::rvGetHostInstructionCount(const void* ptr, size_t size)
+{
+#ifdef DUMP_BLOCKS
+  const u8* cur = static_cast<const u8*>(ptr);
+  const u8* end = cur + size;
+  u32 icount = 0;
+  while (cur < end)
+  {
+    rv_inst inst;
+    size_t instlen;
+    inst_fetch(cur, &inst, &instlen);
+    cur += instlen;
+    icount++;
+  }
+  return icount;
+#else
+  Log_DebugPrintf("Not compiled with DUMP_BLOCKS");
+  return 0;
 #endif
 }
 
@@ -91,14 +120,10 @@ void CPU::NewRec::rvFlushInstructionCache(void* start, u32 size)
 #endif
 }
 
-#if 0
-s64 CPU::NewRec::armGetPCDisplacement(const void* current, const void* target)
+bool CPU::NewRec::rvIsValidSExtITypeImm(u32 imm)
 {
-  // pxAssert(Common::IsAlignedPow2(reinterpret_cast<size_t>(current), 4));
-  // pxAssert(Common::IsAlignedPow2(reinterpret_cast<size_t>(target), 4));
-  return static_cast<s64>((reinterpret_cast<ptrdiff_t>(target) - reinterpret_cast<ptrdiff_t>(current)) >> 2);
+  return (static_cast<u32>((static_cast<s32>(imm) << 20) >> 20) == imm);
 }
-#endif
 
 void CPU::NewRec::rvCheck32BitDisplacement(const void* cur, const void* target)
 {
@@ -140,60 +165,39 @@ void CPU::NewRec::rvEmitCall(Assembler* rvAsm, const void* ptr)
   rvEmitJmp(rvAsm, ptr, ra);
 }
 
-#if 0
-void CPU::NewRec::armEmitCondBranch(Assembler* armAsm, Condition cond, const void* ptr)
+void CPU::NewRec::rvEmitSExtB(Assembler* rvAsm, const biscuit::GPR& rd, const biscuit::GPR& rs)
 {
-  const s64 jump_distance = static_cast<s64>(reinterpret_cast<intptr_t>(ptr) -
-                                             reinterpret_cast<intptr_t>(armAsm->GetCursorAddress<const void*>()));
-  // pxAssert(Common::IsAligned(jump_distance, 4));
-
-  if (vixl::aarch64::Instruction::IsValidImmPCOffset(CondBranchType, jump_distance >> 2))
-  {
-    armAsm->b(jump_distance >> 2, cond);
-  }
-  else
-  {
-    Label branch_not_taken;
-    armAsm->b(&branch_not_taken, InvertCondition(cond));
-
-    const s64 new_jump_distance = static_cast<s64>(reinterpret_cast<intptr_t>(ptr) -
-                                                   reinterpret_cast<intptr_t>(armAsm->GetCursorAddress<const void*>()));
-    armAsm->b(new_jump_distance >> 2);
-    armAsm->bind(&branch_not_taken);
-  }
+  rvAsm->ANDI(rd, rs, 0xFF);
 }
 
-u8* CPU::NewRec::armGetJumpTrampoline(const void* target)
+void CPU::NewRec::rvEmitUExtB(Assembler* rvAsm, const biscuit::GPR& rd, const biscuit::GPR& rs)
 {
-  auto it = s_trampoline_targets.find(target);
-  if (it != s_trampoline_targets.end())
-    return s_trampoline_start_ptr + it->second;
-
-  // align to 16 bytes?
-  const u32 offset = s_trampoline_used; // Common::AlignUpPow2(s_trampoline_used, 16);
-
-  // 4 movs plus a jump
-  if (TRAMPOLINE_AREA_SIZE - offset < 20)
-  {
-    Panic("Ran out of space in constant pool");
-    return nullptr;
-  }
-
-  u8* start = s_trampoline_start_ptr + offset;
-  Assembler armAsm(start, TRAMPOLINE_AREA_SIZE - offset);
-  armMoveAddressToReg(&armAsm, RXSCRATCH, target);
-  armAsm.br(RXSCRATCH);
-
-  const u32 size = static_cast<u32>(armAsm.GetSizeOfCodeGenerated());
-  DebugAssert(size < 20);
-  s_trampoline_targets.emplace(target, offset);
-  s_trampoline_used = offset + static_cast<u32>(size);
-
-  rvFlushInstructionCache(start, size);
-  return start;
+  rvAsm->SLLI(rd, rs, 24);
+  rvAsm->SRAIW(rd, rs, 24);
 }
 
-#endif
+void CPU::NewRec::rvEmitSExtH(Assembler* rvAsm, const biscuit::GPR& rd, const biscuit::GPR& rs)
+{
+  rvAsm->SLLI(rd, rs, 16);
+  rvAsm->SRAIW(rd, rd, 16);
+}
+
+void CPU::NewRec::rvEmitUExtH(Assembler* rvAsm, const biscuit::GPR& rd, const biscuit::GPR& rs)
+{
+  rvAsm->SLLI(rd, rs, 16);
+  rvAsm->SRLI(rd, rd, 16);
+}
+
+void CPU::NewRec::rvEmitDSExtW(Assembler* rvAsm, const biscuit::GPR& rd, const biscuit::GPR& rs)
+{
+  rvAsm->ADDIW(rd, rs, 0);
+}
+
+void CPU::NewRec::rvEmitDUExtW(Assembler* rvAsm, const biscuit::GPR& rd, const biscuit::GPR& rs)
+{
+  rvAsm->SLLI64(rd, rs, 32);
+  rvAsm->SRLI64(rd, rs, 32);
+}
 
 CPU::NewRec::RISCV64Compiler::RISCV64Compiler() = default;
 
@@ -233,83 +237,37 @@ void CPU::NewRec::RISCV64Compiler::Reset(Block* block, u8* code_buffer, u32 code
   }
 }
 
-#if 0
-void CPU::NewRec::RISCV64Compiler::SwitchToFarCode(bool emit_jump, vixl::aarch64::Condition cond)
+void CPU::NewRec::RISCV64Compiler::SwitchToFarCode(
+  bool emit_jump,
+  void (biscuit::Assembler::*inverted_cond)(biscuit::GPR, biscuit::GPR, biscuit::Label*) /* = nullptr */,
+  const biscuit::GPR& rs1 /* = biscuit::zero */, const biscuit::GPR& rs2 /* = biscuit::zero */)
 {
   DebugAssert(rvAsm == m_emitter.get());
   if (emit_jump)
   {
-    const s64 disp = armGetPCDisplacement(GetCurrentCodePointer(), m_far_emitter->GetCursorAddress<const void*>());
-    if (cond != Condition::al)
+    const void* target = m_far_emitter->GetCursorPointer();
+    if (inverted_cond)
     {
-      if (vixl::IsInt19(disp))
-      {
-        rvAsm->b(disp, cond);
-      }
-      else
-      {
-        Label skip;
-        rvAsm->b(&skip, vixl::aarch64::InvertCondition(cond));
-        rvAsm->b(armGetPCDisplacement(GetCurrentCodePointer(), m_far_emitter->GetCursorAddress<const void*>()));
-        rvAsm->bind(&skip);
-      }
+      Label skip;
+      (rvAsm->*inverted_cond)(rs1, rs2, &skip);
+      rvEmitJmp(rvAsm, target);
+      rvAsm->Bind(&skip);
     }
     else
     {
-      rvAsm->b(disp);
+      rvEmitCall(rvAsm, target);
     }
   }
   rvAsm = m_far_emitter.get();
 }
 
-void CPU::NewRec::RISCV64Compiler::SwitchToFarCodeIfBitSet(const vixl::aarch64::Register& reg, u32 bit)
-{
-  const s64 disp = armGetPCDisplacement(GetCurrentCodePointer(), m_far_emitter->GetCursorAddress<const void*>());
-  if (vixl::IsInt14(disp))
-  {
-    rvAsm->tbnz(reg, bit, disp);
-  }
-  else
-  {
-    Label skip;
-    rvAsm->tbz(reg, bit, &skip);
-    rvAsm->b(armGetPCDisplacement(GetCurrentCodePointer(), m_far_emitter->GetCursorAddress<const void*>()));
-    rvAsm->bind(&skip);
-  }
-
-  rvAsm = m_far_emitter.get();
-}
-
-void CPU::NewRec::RISCV64Compiler::SwitchToFarCodeIfRegZeroOrNonZero(const vixl::aarch64::Register& reg, bool nonzero)
-{
-  const s64 disp = armGetPCDisplacement(GetCurrentCodePointer(), m_far_emitter->GetCursorAddress<const void*>());
-  if (vixl::IsInt19(disp))
-  {
-    nonzero ? rvAsm->cbnz(reg, disp) : rvAsm->cbz(reg, disp);
-  }
-  else
-  {
-    Label skip;
-    nonzero ? rvAsm->cbz(reg, &skip) : rvAsm->cbnz(reg, &skip);
-    rvAsm->b(armGetPCDisplacement(GetCurrentCodePointer(), m_far_emitter->GetCursorAddress<const void*>()));
-    rvAsm->bind(&skip);
-  }
-
-  rvAsm = m_far_emitter.get();
-}
-
-void CPU::NewRec::RISCV64Compiler::SwitchToNearCode(bool emit_jump, vixl::aarch64::Condition cond)
+void CPU::NewRec::RISCV64Compiler::SwitchToNearCode(bool emit_jump)
 {
   DebugAssert(rvAsm == m_far_emitter.get());
   if (emit_jump)
-  {
-    const s64 disp = armGetPCDisplacement(GetCurrentCodePointer(), m_emitter->GetCursorAddress<const void*>());
-    (cond != Condition::al) ? rvAsm->b(disp, cond) : rvAsm->b(disp);
-  }
+    rvEmitJmp(rvAsm, m_emitter->GetCursorPointer());
   rvAsm = m_emitter.get();
 }
-
-#endif
 
 void CPU::NewRec::RISCV64Compiler::EmitMov(const biscuit::GPR& dst, u32 val)
 {
@@ -327,7 +285,7 @@ void CPU::NewRec::RISCV64Compiler::SafeImmSExtIType(const biscuit::GPR& rd, cons
 {
   DebugAssert(rd != RSCRATCH && rs != RSCRATCH);
 
-  if (static_cast<u32>((static_cast<s32>(imm) << 20) >> 20) == imm)
+  if (rvIsValidSExtITypeImm(imm))
   {
     (rvAsm->*iop)(rd, rs, imm);
     return;
@@ -335,6 +293,12 @@ void CPU::NewRec::RISCV64Compiler::SafeImmSExtIType(const biscuit::GPR& rd, cons
 
   rvEmitMov(rvAsm, RSCRATCH, imm);
   (rvAsm->*rop)(rd, rs, RSCRATCH);
+}
+
+void CPU::NewRec::RISCV64Compiler::SafeADDIW(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm)
+{
+  SafeImmSExtIType(rd, rs, imm, reinterpret_cast<void (biscuit::Assembler::*)(GPR, GPR, u32)>(&Assembler::ADDIW),
+                   &Assembler::ADDW);
 }
 
 void CPU::NewRec::RISCV64Compiler::SafeANDI(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm)
@@ -352,38 +316,46 @@ void CPU::NewRec::RISCV64Compiler::SafeXORI(const biscuit::GPR& rd, const biscui
   SafeImmSExtIType(rd, rs, imm, &Assembler::XORI, &Assembler::XOR);
 }
 
-#if 0
-
-vixl::aarch64::Operand CPU::NewRec::RISCV64Compiler::armCheckAddSubConstant(s32 val)
+void CPU::NewRec::RISCV64Compiler::SafeSLTI(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm)
 {
-  if (Assembler::IsImmAddSub(val))
-    return vixl::aarch64::Operand(static_cast<int64_t>(val));
-
-  EmitMov(RWSCRATCH, static_cast<u32>(val));
-  return vixl::aarch64::Operand(RWSCRATCH);
+  SafeImmSExtIType(rd, rs, imm, reinterpret_cast<void (biscuit::Assembler::*)(GPR, GPR, u32)>(&Assembler::SLTI),
+                   &Assembler::SLT);
 }
 
-vixl::aarch64::Operand CPU::NewRec::RISCV64Compiler::armCheckAddSubConstant(u32 val)
+void CPU::NewRec::RISCV64Compiler::SafeSLTIU(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm)
 {
-  return armCheckAddSubConstant(static_cast<s32>(val));
+  SafeImmSExtIType(rd, rs, imm, reinterpret_cast<void (biscuit::Assembler::*)(GPR, GPR, u32)>(&Assembler::SLTIU),
+                   &Assembler::SLTU);
 }
 
-vixl::aarch64::Operand CPU::NewRec::RISCV64Compiler::armCheckCompareConstant(s32 val)
+void CPU::NewRec::RISCV64Compiler::EmitSExtB(const biscuit::GPR& rd, const biscuit::GPR& rs)
 {
-  if (Assembler::IsImmConditionalCompare(val))
-    return vixl::aarch64::Operand(static_cast<int64_t>(val));
-
-  EmitMov(RWSCRATCH, static_cast<u32>(val));
-  return vixl::aarch64::Operand(RWSCRATCH);
+  rvEmitSExtB(rvAsm, rd, rs);
 }
 
-vixl::aarch64::Operand CPU::NewRec::RISCV64Compiler::armCheckLogicalConstant(u32 val)
+void CPU::NewRec::RISCV64Compiler::EmitUExtB(const biscuit::GPR& rd, const biscuit::GPR& rs)
 {
-  if (Assembler::IsImmLogical(val, 32))
-    return vixl::aarch64::Operand(static_cast<s64>(static_cast<u64>(val)));
+  rvEmitUExtB(rvAsm, rd, rs);
+}
 
-  EmitMov(RWSCRATCH, val);
-  return vixl::aarch64::Operand(RWSCRATCH);
+void CPU::NewRec::RISCV64Compiler::EmitSExtH(const biscuit::GPR& rd, const biscuit::GPR& rs)
+{
+  rvEmitSExtH(rvAsm, rd, rs);
+}
+
+void CPU::NewRec::RISCV64Compiler::EmitUExtH(const biscuit::GPR& rd, const biscuit::GPR& rs)
+{
+  rvEmitUExtH(rvAsm, rd, rs);
+}
+
+void CPU::NewRec::RISCV64Compiler::EmitDSExtW(const biscuit::GPR& rd, const biscuit::GPR& rs)
+{
+  rvEmitDSExtW(rvAsm, rd, rs);
+}
+
+void CPU::NewRec::RISCV64Compiler::EmitDUExtW(const biscuit::GPR& rd, const biscuit::GPR& rs)
+{
+  rvEmitDUExtW(rvAsm, rd, rs);
 }
 
 void CPU::NewRec::RISCV64Compiler::BeginBlock()
@@ -393,8 +365,6 @@ void CPU::NewRec::RISCV64Compiler::BeginBlock()
   EmitCall(reinterpret_cast<const void*>(&CPU::CodeCache::LogCurrentState));
 #endif
 }
-
-#endif
 
 void CPU::NewRec::RISCV64Compiler::EndBlock(const std::optional<u32>& newpc)
 {
@@ -449,7 +419,7 @@ void CPU::NewRec::RISCV64Compiler::EndAndLinkBlock(const std::optional<u32>& new
   rvAsm->LW(RARG2, PTR(&g_state.downcount));
   if (cycles > 0)
   {
-    SafeADDI(RARG1, RARG1, cycles);
+    SafeADDIW(RARG1, RARG1, cycles);
     rvAsm->SW(RARG1, PTR(&g_state.pending_ticks));
   }
   Label cont;
@@ -502,8 +472,6 @@ const void* CPU::NewRec::RISCV64Compiler::EndCompile(u32* code_size, u32* far_co
   return code;
 }
 
-#if 0
-
 void CPU::NewRec::RISCV64Compiler::DisassembleAndLog(const void* start, u32 size)
 {
   rvDisassembleAndDumpCode(start, size);
@@ -511,10 +479,8 @@ void CPU::NewRec::RISCV64Compiler::DisassembleAndLog(const void* start, u32 size
 
 u32 CPU::NewRec::RISCV64Compiler::GetHostInstructionCount(const void* start, u32 size)
 {
-  return size / kInstructionSize;
+  return rvGetHostInstructionCount(start, size);
 }
-
-#endif
 
 const char* CPU::NewRec::RISCV64Compiler::GetHostRegName(u32 reg) const
 {
@@ -567,13 +533,49 @@ void CPU::NewRec::RISCV64Compiler::AssertRegOrConstT(CompileFlags cf) const
   DebugAssert(cf.valid_host_t || cf.const_t);
 }
 
-#if 0
-vixl::aarch64::MemOperand CPU::NewRec::RISCV64Compiler::MipsPtr(Reg r) const
+biscuit::GPR CPU::NewRec::RISCV64Compiler::CFGetSafeRegS(CompileFlags cf, const biscuit::GPR& temp_reg)
 {
-  DebugAssert(r < Reg::count);
-  return PTR(&g_state.regs.r[static_cast<u32>(r)]);
+  if (cf.valid_host_s)
+  {
+    return GPR(cf.host_s);
+  }
+  else if (cf.const_s)
+  {
+    if (HasConstantRegValue(cf.MipsS(), 0))
+      return zero;
+
+    EmitMov(temp_reg, GetConstantRegU32(cf.MipsS()));
+    return temp_reg;
+  }
+  else
+  {
+    Log_WarningPrintf("Hit memory path in CFGetSafeRegS() for %s", GetRegName(cf.MipsS()));
+    rvAsm->LW(temp_reg, PTR(&g_state.regs.r[cf.mips_s]));
+    return temp_reg;
+  }
 }
-#endif
+
+biscuit::GPR CPU::NewRec::RISCV64Compiler::CFGetSafeRegT(CompileFlags cf, const biscuit::GPR& temp_reg)
+{
+  if (cf.valid_host_t)
+  {
+    return GPR(cf.host_t);
+  }
+  else if (cf.const_t)
+  {
+    if (HasConstantRegValue(cf.MipsT(), 0))
+      return zero;
+
+    EmitMov(temp_reg, GetConstantRegU32(cf.MipsT()));
+    return temp_reg;
+  }
+  else
+  {
+    Log_WarningPrintf("Hit memory path in CFGetSafeRegT() for %s", GetRegName(cf.MipsT()));
+    rvAsm->LW(temp_reg, PTR(&g_state.regs.r[cf.mips_t]));
+    return temp_reg;
+  }
+}
 
 biscuit::GPR CPU::NewRec::RISCV64Compiler::CFGetRegD(CompileFlags cf) const
 {
@@ -690,7 +692,7 @@ void CPU::NewRec::RISCV64Compiler::Flush(u32 flags)
     rvAsm->LW(RARG2, PTR(&g_state.gte_completion_tick));
     if (m_cycles > 0)
     {
-      SafeADDI(RARG1, RARG1, m_cycles);
+      SafeADDIW(RARG1, RARG1, m_cycles);
       m_cycles = 0;
     }
     Label no_stall;
@@ -708,13 +710,13 @@ void CPU::NewRec::RISCV64Compiler::Flush(u32 flags)
     // update cycles at the same time
     if (flags & FLUSH_CYCLES && m_cycles > 0)
     {
-      SafeADDI(RARG1, RARG1, m_cycles);
+      SafeADDIW(RARG1, RARG1, m_cycles);
       rvAsm->SW(RARG1, PTR(&g_state.pending_ticks));
       m_gte_done_cycle -= m_cycles;
       m_cycles = 0;
     }
 
-    SafeADDI(RARG1, RARG1, m_gte_done_cycle);
+    SafeADDIW(RARG1, RARG1, m_gte_done_cycle);
     rvAsm->SW(RARG1, PTR(&g_state.gte_completion_tick));
     m_gte_done_cycle = 0;
     m_dirty_gte_done_cycle = true;
@@ -723,14 +725,12 @@ void CPU::NewRec::RISCV64Compiler::Flush(u32 flags)
   if (flags & FLUSH_CYCLES && m_cycles > 0)
   {
     rvAsm->LW(RARG1, PTR(&g_state.pending_ticks));
-    SafeADDI(RARG1, RARG1, m_cycles);
+    SafeADDIW(RARG1, RARG1, m_cycles);
     rvAsm->SW(RARG1, PTR(&g_state.pending_ticks));
     m_gte_done_cycle = std::max<TickCount>(m_gte_done_cycle - m_cycles, 0);
     m_cycles = 0;
   }
 }
-
-#if 0
 
 void CPU::NewRec::RISCV64Compiler::Compile_Fallback()
 {
@@ -758,8 +758,6 @@ void CPU::NewRec::RISCV64Compiler::Compile_Fallback()
 #endif
 }
 
-#endif
-
 void CPU::NewRec::RISCV64Compiler::CheckBranchTarget(const biscuit::GPR& pcreg)
 {
   if (!g_settings.cpu_recompiler_memory_exceptions)
@@ -767,9 +765,7 @@ void CPU::NewRec::RISCV64Compiler::CheckBranchTarget(const biscuit::GPR& pcreg)
 
   DebugAssert(pcreg != RSCRATCH);
   rvAsm->ANDI(RSCRATCH, pcreg, 0x3);
-#if 0
-  SwitchToFarCode(true, &Assembler::BNEZ, RSCRATCH, zero);
-#endif
+  SwitchToFarCode(true, &Assembler::BEQ, RSCRATCH, zero);
 
   BackupHostState();
   EndBlockWithException(Exception::AdEL);
@@ -802,7 +798,6 @@ void CPU::NewRec::RISCV64Compiler::Compile_jalr(CompileFlags cf)
   EndBlock(std::nullopt);
 }
 
-#if 0
 void CPU::NewRec::RISCV64Compiler::Compile_bxx(CompileFlags cf, BranchCondition cond)
 {
   AssertRegOrConstS(cf);
@@ -826,45 +821,42 @@ void CPU::NewRec::RISCV64Compiler::Compile_bxx(CompileFlags cf, BranchCondition 
       AssertRegOrConstT(cf);
       if (cf.const_t && HasConstantRegValue(cf.MipsT(), 0))
       {
-        (cond == BranchCondition::Equal) ? rvAsm->cbz(rs, &taken) : rvAsm->cbnz(rs, &taken);
+        (cond == BranchCondition::Equal) ? rvAsm->BEQZ(rs, &taken) : rvAsm->BNEZ(rs, &taken);
       }
       else
       {
-        if (cf.valid_host_t)
-          rvAsm->cmp(rs, CFGetRegT(cf));
-        else if (cf.const_t)
-          rvAsm->cmp(rs, armCheckCompareConstant(GetConstantRegU32(cf.MipsT())));
-
-        rvAsm->b(&taken, (cond == BranchCondition::Equal) ? eq : ne);
+        const GPR rt = cf.valid_host_t ? CFGetRegT(cf) : RARG1;
+        if (!cf.valid_host_t)
+          MoveTToReg(RARG1, cf);
+        if (cond == Compiler::BranchCondition::Equal)
+          rvAsm->BEQ(rs, rt, &taken);
+        else
+          rvAsm->BNE(rs, rt, &taken);
       }
     }
     break;
 
     case BranchCondition::GreaterThanZero:
     {
-      rvAsm->cmp(rs, 0);
-      rvAsm->b(&taken, gt);
+      rvAsm->BGTZ(rs, &taken);
     }
     break;
 
     case BranchCondition::GreaterEqualZero:
     {
-      rvAsm->cmp(rs, 0);
-      rvAsm->b(&taken, ge);
+      rvAsm->BGEZ(rs, &taken);
     }
     break;
 
     case BranchCondition::LessThanZero:
     {
-      rvAsm->cmp(rs, 0);
-      rvAsm->b(&taken, lt);
+      rvAsm->BLTZ(rs, &taken);
     }
     break;
 
     case BranchCondition::LessEqualZero:
     {
-      rvAsm->cmp(rs, 0);
-      rvAsm->b(&taken, le);
+      rvAsm->BLEZ(rs, &taken);
     }
     break;
   }
@@ -875,7 +867,7 @@ void CPU::NewRec::RISCV64Compiler::Compile_bxx(CompileFlags cf, BranchCondition 
 
   EndBlock(m_compiler_pc);
 
-  rvAsm->bind(&taken);
+  rvAsm->Bind(&taken);
 
   RestoreHostState();
   if (!cf.delay_slot_swapped)
@@ -883,8 +875,6 @@ void CPU::NewRec::RISCV64Compiler::Compile_bxx(CompileFlags cf, BranchCondition 
 
   EndBlock(taken_pc);
 }
-
-#endif
 
 void CPU::NewRec::RISCV64Compiler::Compile_addi(CompileFlags cf, bool overflow)
 {
@@ -894,7 +884,7 @@ void CPU::NewRec::RISCV64Compiler::Compile_addi(CompileFlags cf, bool overflow)
   {
     if (!overflow)
     {
-      SafeADDI(rt, rs, imm);
+      SafeADDIW(rt, rs, imm);
     }
     else
     {
@@ -929,15 +919,13 @@ void CPU::NewRec::RISCV64Compiler::Compile_sltiu(CompileFlags cf)
   Compile_slti(cf, false);
 }
 
-#if 0
-
 void CPU::NewRec::RISCV64Compiler::Compile_slti(CompileFlags cf, bool sign)
 {
-  rvAsm->cmp(CFGetRegS(cf), armCheckCompareConstant(static_cast<s32>(inst->i.imm_sext32())));
-  rvAsm->cset(CFGetRegT(cf), sign ? lt : lo);
+  if (sign)
+    SafeSLTI(CFGetRegD(cf), CFGetRegS(cf), inst->i.imm_sext32());
+  else
+    SafeSLTIU(CFGetRegD(cf), CFGetRegS(cf), inst->i.imm_sext32());
 }
-
-#endif
 
 void CPU::NewRec::RISCV64Compiler::Compile_andi(CompileFlags cf)
 {
@@ -968,36 +956,32 @@ void CPU::NewRec::RISCV64Compiler::Compile_xori(CompileFlags cf)
     rvAsm->MV(rt, rs);
 }
 
-#if 0
-void CPU::NewRec::RISCV64Compiler::Compile_shift(CompileFlags cf,
-                                                 void (vixl::aarch64::Assembler::*op)(const vixl::aarch64::Register&,
-                                                                                      const vixl::aarch64::Register&,
-                                                                                      unsigned))
+void CPU::NewRec::RISCV64Compiler::Compile_shift(
+  CompileFlags cf, void (biscuit::Assembler::*op)(biscuit::GPR, biscuit::GPR, biscuit::GPR),
+  void (biscuit::Assembler::*op_const)(biscuit::GPR, biscuit::GPR, unsigned))
 {
-  const WRegister rd = CFGetRegD(cf);
-  const WRegister rt = CFGetRegT(cf);
+  const GPR rd = CFGetRegD(cf);
+  const GPR rt = CFGetRegT(cf);
   if (inst->r.shamt > 0)
-    (rvAsm->*op)(rd, rt, inst->r.shamt);
-  else if (rd.GetCode() != rt.GetCode())
-    rvAsm->mov(rd, rt);
+    (rvAsm->*op_const)(rd, rt, inst->r.shamt);
+  else if (rd.Index() != rt.Index())
+    rvAsm->MV(rd, rt);
 }
 
 void CPU::NewRec::RISCV64Compiler::Compile_sll(CompileFlags cf)
 {
-  Compile_shift(cf, &Assembler::lsl);
+  Compile_shift(cf, &Assembler::SLLW, &Assembler::SLLIW);
 }
 
 void CPU::NewRec::RISCV64Compiler::Compile_srl(CompileFlags cf)
 {
-  Compile_shift(cf, &Assembler::lsr);
+  Compile_shift(cf, &Assembler::SRLW, &Assembler::SRLIW);
 }
 
 void CPU::NewRec::RISCV64Compiler::Compile_sra(CompileFlags cf)
 {
-  Compile_shift(cf, &Assembler::asr);
+  Compile_shift(cf, &Assembler::SRAW, &Assembler::SRAIW);
 }
-
-#endif
 
 void CPU::NewRec::RISCV64Compiler::Compile_variable_shift(
   CompileFlags cf, void (biscuit::Assembler::*op)(biscuit::GPR, biscuit::GPR, biscuit::GPR),
@@ -1040,7 +1024,6 @@ void CPU::NewRec::RISCV64Compiler::Compile_srav(CompileFlags cf)
   Compile_variable_shift(cf, &Assembler::SRAW, &Assembler::SRAIW);
 }
 
-#if 0
 void CPU::NewRec::RISCV64Compiler::Compile_mult(CompileFlags cf, bool sign)
 {
   const GPR rs = cf.valid_host_s ? CFGetRegS(cf) : RARG1;
@@ -1052,7 +1035,6 @@ void CPU::NewRec::RISCV64Compiler::Compile_mult(CompileFlags cf, bool sign)
     MoveTToReg(rt, cf);
 
   // TODO: if lo/hi gets killed, we can use a 32-bit multiply
-  // This could be problematic if we're not correctly filling in the upper bits..
   const GPR lo = CFGetRegLO(cf);
   const GPR hi = CFGetRegHI(cf);
 
@@ -1060,12 +1042,18 @@ void CPU::NewRec::RISCV64Compiler::Compile_mult(CompileFlags cf, bool sign)
   {
     rvAsm->MUL(lo, rs, rt);
     rvAsm->SRAI64(hi, lo, 32);
+    EmitDSExtW(lo, lo);
   }
-
-  (sign) ? rvAsm->MULU(lo.X(), rs, rt) : rvAsm->umull(lo.X(), rs, rt);
-  rvAsm->lsr(hi.X(), lo.X(), 32);
+  else
+  {
+    // Need to make it unsigned.
+    EmitDUExtW(RARG1, rs);
+    EmitDUExtW(RARG2, rt);
+    rvAsm->MUL(lo, RARG1, RARG2);
+    rvAsm->SRAI64(hi, lo, 32);
+    EmitDSExtW(lo, lo);
+  }
 }
-#endif
 
 void CPU::NewRec::RISCV64Compiler::Compile_mult(CompileFlags cf)
 {
@@ -1077,10 +1065,10 @@ void CPU::NewRec::RISCV64Compiler::Compile_multu(CompileFlags cf)
   Compile_mult(cf, false);
 }
 
-#if 0
 void CPU::NewRec::RISCV64Compiler::Compile_div(CompileFlags cf)
 {
   // 36 Volume I: RISC-V User-Level ISA V2.2
+#if 0
   const GPR rs = cf.valid_host_s ? CFGetRegS(cf) : RARG1;
   if (!cf.valid_host_s)
     MoveSToReg(rs, cf);
@@ -1121,8 +1109,10 @@ void CPU::NewRec::RISCV64Compiler::Compile_div(CompileFlags cf)
   rvAsm->msub(rhi, rlo, rt, rs);
 
   rvAsm->bind(&done);
-}
+#else
+  Panic("FIXME");
 #endif
+}
 
 void CPU::NewRec::RISCV64Compiler::Compile_divu(CompileFlags cf)
 {
@@ -1142,9 +1132,9 @@ void CPU::NewRec::RISCV64Compiler::Compile_divu(CompileFlags cf)
   rvAsm->REMUW(rhi, rs, rt);
 }
 
-#if 0
 void CPU::NewRec::RISCV64Compiler::TestOverflow(const biscuit::GPR& result)
 {
+#if 0
   // Volume I: RISC-V User-Level ISA V2.2 13
   SwitchToFarCode(true, vs);
 
@@ -1158,53 +1148,61 @@ void CPU::NewRec::RISCV64Compiler::TestOverflow(const biscuit::GPR& result)
   RestoreHostState();
 
   SwitchToNearCode(false);
+#else
+  Panic("FIXME");
+#endif
 }
 
-void CPU::NewRec::RISCV64Compiler::Compile_dst_op(CompileFlags cf,
-                                                  void (vixl::aarch64::Assembler::*op)(const vixl::aarch64::Register&,
-                                                                                       const vixl::aarch64::Register&,
-                                                                                       const vixl::aarch64::Operand&),
-                                                  bool commutative, bool logical, bool overflow)
+void CPU::NewRec::RISCV64Compiler::Compile_dst_op(
+  CompileFlags cf, void (biscuit::Assembler::*op)(biscuit::GPR, biscuit::GPR, biscuit::GPR),
+  void (RISCV64Compiler::*op_const)(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm), bool commutative,
+  bool overflow)
 {
   AssertRegOrConstS(cf);
   AssertRegOrConstT(cf);
 
-  const WRegister rd = CFGetRegD(cf);
+  const GPR rd = CFGetRegD(cf);
   if (cf.valid_host_s && cf.valid_host_t)
   {
     (rvAsm->*op)(rd, CFGetRegS(cf), CFGetRegT(cf));
   }
   else if (commutative && (cf.const_s || cf.const_t))
   {
-    const WRegister src = cf.const_s ? CFGetRegT(cf) : CFGetRegS(cf);
+    const GPR src = cf.const_s ? CFGetRegT(cf) : CFGetRegS(cf);
     if (const u32 cv = GetConstantRegU32(cf.const_s ? cf.MipsS() : cf.MipsT()); cv != 0)
     {
-      (rvAsm->*op)(rd, src, logical ? armCheckLogicalConstant(cv) : armCheckAddSubConstant(cv));
+      (this->*op_const)(rd, src, cv);
     }
     else
     {
-      if (rd.GetCode() != src.GetCode())
-        rvAsm->mov(rd, src);
+      if (rd.Index() != src.Index())
+        rvAsm->MV(rd, src);
       overflow = false;
     }
   }
   else if (cf.const_s)
   {
-    // TODO: Check where we can use wzr here
-    EmitMov(RWSCRATCH, GetConstantRegU32(cf.MipsS()));
-    (rvAsm->*op)(rd, RWSCRATCH, CFGetRegT(cf));
-  }
-  else if (cf.const_t)
-  {
-    const WRegister rs = CFGetRegS(cf);
-    if (const u32 cv = GetConstantRegU32(cf.const_s ? cf.MipsS() : cf.MipsT()); cv != 0)
+    if (HasConstantRegValue(cf.MipsS(), 0))
     {
-      (rvAsm->*op)(rd, rs, logical ? armCheckLogicalConstant(cv) : armCheckAddSubConstant(cv));
+      (rvAsm->*op)(rd, zero, CFGetRegT(cf));
     }
     else
     {
-      if (rd.GetCode() != rs.GetCode())
-        rvAsm->mov(rd, rs);
+      EmitMov(RSCRATCH, GetConstantRegU32(cf.MipsS()));
+      (rvAsm->*op)(rd, RSCRATCH, CFGetRegT(cf));
+    }
+  }
+  else if (cf.const_t)
+  {
+    const GPR rs = CFGetRegS(cf);
+    if (const u32 cv = GetConstantRegU32(cf.const_s ? cf.MipsS() : cf.MipsT()); cv != 0)
+    {
+      (this->*op_const)(rd, rs, cv);
+    }
+    else
+    {
+      if (rd.Index() != rs.Index())
+        rvAsm->MV(rd, rs);
       overflow = false;
     }
   }
@@ -1215,32 +1213,24 @@ void CPU::NewRec::RISCV64Compiler::Compile_dst_op(CompileFlags cf,
 
 void CPU::NewRec::RISCV64Compiler::Compile_add(CompileFlags cf)
 {
-  if (g_settings.cpu_recompiler_memory_exceptions)
-    Compile_dst_op(cf, &Assembler::adds, true, false, true);
-  else
-    Compile_dst_op(cf, &Assembler::add, true, false, true);
+  Compile_dst_op(cf, &Assembler::ADDW, &RISCV64Compiler::SafeADDIW, true, g_settings.cpu_recompiler_memory_exceptions);
 }
 
 void CPU::NewRec::RISCV64Compiler::Compile_addu(CompileFlags cf)
 {
-  Compile_dst_op(cf, &Assembler::add, true, false, false);
+  Compile_dst_op(cf, &Assembler::ADDW, &RISCV64Compiler::SafeADDIW, true, false);
 }
 
 void CPU::NewRec::RISCV64Compiler::Compile_sub(CompileFlags cf)
 {
-  if (g_settings.cpu_recompiler_memory_exceptions)
-    Compile_dst_op(cf, &Assembler::subs, false, false, true);
-  else
-    Compile_dst_op(cf, &Assembler::sub, false, false, true);
+  Compile_dst_op(cf, &Assembler::SUBW, &RISCV64Compiler::SafeSUBIW, false, g_settings.cpu_recompiler_memory_exceptions);
 }
 
 void CPU::NewRec::RISCV64Compiler::Compile_subu(CompileFlags cf)
 {
-  Compile_dst_op(cf, &Assembler::sub, false, false, false);
+  Compile_dst_op(cf, &Assembler::SUBW, &RISCV64Compiler::SafeSUBIW, false, false);
 }
-#endif
 
-#if 0
 void CPU::NewRec::RISCV64Compiler::Compile_and(CompileFlags cf)
 {
   AssertRegOrConstS(cf);
@@ -1259,7 +1249,7 @@ void CPU::NewRec::RISCV64Compiler::Compile_and(CompileFlags cf)
     return;
   }
 
-  Compile_dst_op(cf, &Assembler::and_, true, true, false);
+  Compile_dst_op(cf, &Assembler::AND, &RISCV64Compiler::SafeANDI, true, false);
 }
 
 void CPU::NewRec::RISCV64Compiler::Compile_or(CompileFlags cf)
@@ -1268,14 +1258,14 @@ void CPU::NewRec::RISCV64Compiler::Compile_or(CompileFlags cf)
   AssertRegOrConstT(cf);
 
   // or/nor with 0 -> no effect
-  const WRegister regd = CFGetRegD(cf);
+  const GPR regd = CFGetRegD(cf);
   if (HasConstantRegValue(cf.MipsS(), 0) || HasConstantRegValue(cf.MipsT(), 0) || cf.MipsS() == cf.MipsT())
   {
     cf.const_s ? MoveTToReg(regd, cf) : MoveSToReg(regd, cf);
     return;
   }
 
-  Compile_dst_op(cf, &Assembler::orr, true, true, false);
+  Compile_dst_op(cf, &Assembler::OR, &RISCV64Compiler::SafeORI, true, false);
 }
 
 void CPU::NewRec::RISCV64Compiler::Compile_xor(CompileFlags cf)
@@ -1283,11 +1273,11 @@ void CPU::NewRec::RISCV64Compiler::Compile_xor(CompileFlags cf)
   AssertRegOrConstS(cf);
   AssertRegOrConstT(cf);
 
-  const WRegister regd = CFGetRegD(cf);
+  const GPR regd = CFGetRegD(cf);
   if (cf.MipsS() == cf.MipsT())
   {
     // xor with self -> zero
-    rvAsm->mov(regd, wzr);
+    EmitMov(regd, 0);
     return;
   }
   else if (HasConstantRegValue(cf.MipsS(), 0) || HasConstantRegValue(cf.MipsT(), 0))
@@ -1297,13 +1287,13 @@ void CPU::NewRec::RISCV64Compiler::Compile_xor(CompileFlags cf)
     return;
   }
 
-  Compile_dst_op(cf, &Assembler::eor, true, true, false);
+  Compile_dst_op(cf, &Assembler::XOR, &RISCV64Compiler::SafeXORI, true, false);
 }
 
 void CPU::NewRec::RISCV64Compiler::Compile_nor(CompileFlags cf)
 {
   Compile_or(cf);
-  rvAsm->mvn(CFGetRegD(cf), CFGetRegD(cf));
+  rvAsm->NOT(CFGetRegD(cf), CFGetRegD(cf));
 }
 
 void CPU::NewRec::RISCV64Compiler::Compile_slt(CompileFlags cf)
@@ -1321,24 +1311,25 @@ void CPU::NewRec::RISCV64Compiler::Compile_slt(CompileFlags cf, bool sign)
   AssertRegOrConstS(cf);
   AssertRegOrConstT(cf);
 
-  // TODO: swap and reverse op for constants
-  if (cf.const_s)
+  const GPR rd = CFGetRegD(cf);
+  const GPR rs = CFGetSafeRegS(cf, RARG1);
+
+  if (cf.const_t && rvIsValidSExtITypeImm(GetConstantRegU32(cf.MipsT())))
   {
-    EmitMov(RWSCRATCH, GetConstantRegS32(cf.MipsS()));
-    rvAsm->cmp(RWSCRATCH, CFGetRegT(cf));
-  }
-  else if (cf.const_t)
-  {
-    rvAsm->cmp(CFGetRegS(cf), armCheckCompareConstant(GetConstantRegS32(cf.MipsT())));
+    if (sign)
+      rvAsm->SLTI(rd, rs, GetConstantRegS32(cf.MipsT()));
+    else
+      rvAsm->SLTIU(rd, rs, GetConstantRegS32(cf.MipsT()));
   }
   else
   {
-    rvAsm->cmp(CFGetRegS(cf), CFGetRegT(cf));
+    const GPR rt = CFGetSafeRegT(cf, RARG2);
+    if (sign)
+      rvAsm->SLT(rd, rs, rt);
+    else
+      rvAsm->SLTU(rd, rs, rt);
   }
-
-  rvAsm->cset(CFGetRegD(cf), sign ? lt : lo);
 }
-#endif
 
 void CPU::NewRec::RISCV64Compiler::FlushForLoadStore(const std::optional<VirtualMemoryAddress>& address, bool store)
 {
@@ -1377,19 +1368,18 @@ biscuit::GPR CPU::NewRec::RISCV64Compiler::ComputeLoadStoreAddressArg(
   {
     if (cf.valid_host_s)
     {
-      SafeADDI(dst, CFGetRegS(cf), inst->i.imm_sext32());
+      SafeADDIW(dst, CFGetRegS(cf), inst->i.imm_sext32());
     }
     else
     {
       rvAsm->LW(dst, PTR(&g_state.regs.r[cf.mips_s]));
-      SafeADDI(dst, dst, inst->i.imm_sext32());
+      SafeADDIW(dst, dst, inst->i.imm_sext32());
     }
   }
 
   return dst;
 }
 
-#if 0
 template<typename RegAllocFn>
 void CPU::NewRec::RISCV64Compiler::GenerateLoad(const biscuit::GPR& addr_reg, MemoryAccessSize size, bool sign,
                                                 const RegAllocFn& dst_reg_alloc)
@@ -1399,7 +1389,7 @@ void CPU::NewRec::RISCV64Compiler::GenerateLoad(const biscuit::GPR& addr_reg, Me
   {
     m_cycles += Bus::RAM_READ_TICKS;
 
-    const WRegister dst = dst_reg_alloc();
+    const GPR dst = dst_reg_alloc();
     rvAsm->ADD(RSCRATCH, RMEMBASE, addr_reg);
     u8* start = m_emitter->GetCursorPointer();
     switch (size)
@@ -1422,7 +1412,7 @@ void CPU::NewRec::RISCV64Compiler::GenerateLoad(const biscuit::GPR& addr_reg, Me
   }
 
   if (addr_reg.Index() != RARG1.Index())
-    rvAsm->mov(RARG1, addr_reg);
+    rvAsm->MV(RARG1, addr_reg);
 
   switch (size)
   {
@@ -1449,46 +1439,47 @@ void CPU::NewRec::RISCV64Compiler::GenerateLoad(const biscuit::GPR& addr_reg, Me
   // TODO: turn this into an asm function instead
   if (checked)
   {
-    SwitchToFarCodeIfBitSet(RXRET, 63);
+    rvAsm->SRLI64(RSCRATCH, RRET, 63);
+    SwitchToFarCode(true, &Assembler::BNE, RSCRATCH, zero);
     BackupHostState();
 
     // Need to stash this in a temp because of the flush.
-    const WRegister temp = WRegister(AllocateTempHostReg(HR_CALLEE_SAVED));
-    rvAsm->neg(temp.X(), RXRET);
-    rvAsm->lsl(temp, temp, 2);
+    const GPR temp = GPR(AllocateTempHostReg(HR_CALLEE_SAVED));
+    rvAsm->NEG(temp, RRET);
+    rvAsm->SLLIW(temp, temp, 2);
 
     Flush(FLUSH_FOR_C_CALL | FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_EXCEPTION);
 
     // cause_bits = (-result << 2) | BD | cop_n
-    rvAsm->orr(RWARG1, temp,
-               armCheckLogicalConstant(Cop0Registers::CAUSE::MakeValueForException(
-                 static_cast<Exception>(0), m_current_instruction_branch_delay_slot, false, inst->cop.cop_n)));
-    EmitMov(RWARG2, m_current_instruction_pc);
+    SafeORI(RARG1, temp,
+            Cop0Registers::CAUSE::MakeValueForException(
+              static_cast<Exception>(0), m_current_instruction_branch_delay_slot, false, inst->cop.cop_n));
+    EmitMov(RARG2, m_current_instruction_pc);
     EmitCall(reinterpret_cast<const void*>(static_cast<void (*)(u32, u32)>(&CPU::RaiseException)));
-    FreeHostReg(temp.GetCode());
+    FreeHostReg(temp.Index());
     EndBlock(std::nullopt);
 
     RestoreHostState();
     SwitchToNearCode(false);
   }
 
-  const WRegister dst_reg = dst_reg_alloc();
+  const GPR dst_reg = dst_reg_alloc();
   switch (size)
   {
     case MemoryAccessSize::Byte:
     {
-      sign ? rvAsm->sxtb(dst_reg, RWRET) : rvAsm->uxtb(dst_reg, RWRET);
+      sign ? EmitSExtB(dst_reg, RRET) : EmitUExtB(dst_reg, RRET);
     }
     break;
     case MemoryAccessSize::HalfWord:
     {
-      sign ? rvAsm->sxth(dst_reg, RWRET) : rvAsm->uxth(dst_reg, RWRET);
+      sign ? EmitSExtH(dst_reg, RRET) : EmitUExtH(dst_reg, RRET);
     }
     break;
     case MemoryAccessSize::Word:
     {
-      if (dst_reg.GetCode() != RWRET.GetCode())
-        rvAsm->mov(dst_reg, RWRET);
+      if (dst_reg.Index() != RRET.Index())
+        rvAsm->MV(dst_reg, RRET);
     }
     break;
   }
@@ -1551,30 +1542,28 @@ void CPU::NewRec::RISCV64Compiler::GenerateStore(const biscuit::GPR& addr_reg, c
   // TODO: turn this into an asm function instead
   if (checked)
   {
-    SwitchToFarCodeIfRegZeroOrNonZero(RXRET, true);
+    SwitchToFarCode(true, &Assembler::BNE, RRET, zero);
     BackupHostState();
 
     // Need to stash this in a temp because of the flush.
-    const WRegister temp = WRegister(AllocateTempHostReg(HR_CALLEE_SAVED));
-    rvAsm->lsl(temp, RWRET, 2);
+    const GPR temp = GPR(AllocateTempHostReg(HR_CALLEE_SAVED));
+    rvAsm->SLLIW(temp, RRET, 2);
 
     Flush(FLUSH_FOR_C_CALL | FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_EXCEPTION);
 
     // cause_bits = (result << 2) | BD | cop_n
-    rvAsm->orr(RWARG1, temp,
-               armCheckLogicalConstant(Cop0Registers::CAUSE::MakeValueForException(
-                 static_cast<Exception>(0), m_current_instruction_branch_delay_slot, false, inst->cop.cop_n)));
-    EmitMov(RWARG2, m_current_instruction_pc);
+    SafeORI(RARG1, temp,
+            Cop0Registers::CAUSE::MakeValueForException(
+              static_cast<Exception>(0), m_current_instruction_branch_delay_slot, false, inst->cop.cop_n));
+    EmitMov(RARG2, m_current_instruction_pc);
     EmitCall(reinterpret_cast<const void*>(static_cast<void (*)(u32, u32)>(&CPU::RaiseException)));
-    FreeHostReg(temp.GetCode());
+    FreeHostReg(temp.Index());
     EndBlock(std::nullopt);
 
     RestoreHostState();
     SwitchToNearCode(false);
   }
 }
-
-#endif
 
 void CPU::NewRec::RISCV64Compiler::Compile_lxx(CompileFlags cf, MemoryAccessSize size, bool sign,
                                                const std::optional<VirtualMemoryAddress>& address)
@@ -1590,11 +1579,10 @@ void CPU::NewRec::RISCV64Compiler::Compile_lxx(CompileFlags cf, MemoryAccessSize
   });
 }
 
-#if 0
-
 void CPU::NewRec::RISCV64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize size, bool sign,
                                                const std::optional<VirtualMemoryAddress>& address)
 {
+#if 0
   DebugAssert(size == MemoryAccessSize::Word && !sign);
   FlushForLoadStore(address, false);
 
@@ -1674,9 +1662,10 @@ void CPU::NewRec::RISCV64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize
   }
 
   FreeHostReg(addr.GetCode());
-}
-
+#else
+  Panic("FIXME");
 #endif
+}
 
 void CPU::NewRec::RISCV64Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSize size, bool sign,
                                                 const std::optional<VirtualMemoryAddress>& address)
@@ -1702,14 +1691,14 @@ void CPU::NewRec::RISCV64Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSiz
 
     case GTERegisterAccessAction::SignExtend16:
     {
-      SExtH(RRET, RRET);
+      EmitSExtH(RRET, RRET);
       rvAsm->SW(RRET, PTR(ptr));
       return;
     }
 
     case GTERegisterAccessAction::ZeroExtend16:
     {
-      UExtH(RRET, RRET);
+      EmitUExtH(RRET, RRET);
       rvAsm->SW(RRET, PTR(ptr));
       return;
     }
@@ -1759,11 +1748,10 @@ void CPU::NewRec::RISCV64Compiler::Compile_sxx(CompileFlags cf, MemoryAccessSize
   GenerateStore(addr, cf.valid_host_t ? CFGetRegT(cf) : RARG2, size);
 }
 
-#if 0
-
 void CPU::NewRec::RISCV64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize size, bool sign,
                                                const std::optional<VirtualMemoryAddress>& address)
 {
+#if 0
   DebugAssert(size == MemoryAccessSize::Word && !sign);
   FlushForLoadStore(address, true);
 
@@ -1819,9 +1807,10 @@ void CPU::NewRec::RISCV64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize
 
   rvAsm->and_(RWARG1, addr, armCheckLogicalConstant(~0x3u));
   GenerateStore(RWARG1, value, MemoryAccessSize::Word);
-}
-
+#else
+  Panic("FIXME");
 #endif
+}
 
 void CPU::NewRec::RISCV64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSize size, bool sign,
                                                 const std::optional<VirtualMemoryAddress>& address)
@@ -1859,7 +1848,6 @@ void CPU::NewRec::RISCV64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSiz
   GenerateStore(addr, RARG2, size);
 }
 
-#if 0
 void CPU::NewRec::RISCV64Compiler::Compile_mtc0(CompileFlags cf)
 {
   // TODO: we need better constant setting here.. which will need backprop
@@ -1883,28 +1871,29 @@ void CPU::NewRec::RISCV64Compiler::Compile_mtc0(CompileFlags cf)
 
   // for some registers, we need to test certain bits
   const bool needs_bit_test = (reg == Cop0Reg::SR && g_settings.IsUsingFastmem());
-  const WRegister new_value = RWARG1;
-  const WRegister old_value = RWARG2;
-  const WRegister changed_bits = RWARG3;
-  const WRegister mask_reg = RWSCRATCH;
+  const GPR new_value = RARG1;
+  const GPR old_value = RARG2;
+  const GPR changed_bits = RARG3;
+  const GPR mask_reg = RSCRATCH;
 
   // Load old value
-  rvAsm->ldr(old_value, PTR(ptr));
+  rvAsm->LW(old_value, PTR(ptr));
 
   // No way we fit this in an immediate..
   EmitMov(mask_reg, mask);
 
   // update value
   if (cf.valid_host_t)
-    rvAsm->and_(new_value, CFGetRegT(cf), mask_reg);
+    rvAsm->AND(new_value, CFGetRegT(cf), mask_reg);
   else
     EmitMov(new_value, GetConstantRegU32(cf.MipsT()) & mask);
 
   if (needs_bit_test)
-    rvAsm->eor(changed_bits, old_value, new_value);
-  rvAsm->bic(old_value, old_value, mask_reg);
-  rvAsm->orr(new_value, old_value, new_value);
-  rvAsm->str(new_value, PTR(ptr));
+    rvAsm->XOR(changed_bits, old_value, new_value);
+  rvAsm->NOT(mask_reg, mask_reg);
+  rvAsm->AND(old_value, old_value, mask_reg);
+  rvAsm->OR(new_value, old_value, new_value);
+  rvAsm->SW(new_value, PTR(ptr));
 
   if (reg == Cop0Reg::SR && g_settings.IsUsingFastmem())
   {
@@ -1912,19 +1901,23 @@ void CPU::NewRec::RISCV64Compiler::Compile_mtc0(CompileFlags cf)
     // We could just inline the whole thing..
     Flush(FLUSH_FOR_C_CALL);
 
-    SwitchToFarCodeIfBitSet(changed_bits, 16);
-    rvAsm->sub(sp, sp, 16);
-    rvAsm->stp(RWARG1, RWARG2, MemOperand(sp));
+    rvAsm->SLLIW(RSCRATCH, changed_bits, 16);
+    rvAsm->ANDI(RSCRATCH, changed_bits, 1);
+    SwitchToFarCode(true, &Assembler::BEQ, RSCRATCH, zero);
+    rvAsm->ADDI(sp, sp, -16);
+    rvAsm->SW(RARG1, 0, sp);
+    rvAsm->SW(RARG2, 8, sp);
     EmitCall(reinterpret_cast<const void*>(&CPU::UpdateFastmemBase));
-    rvAsm->ldp(RWARG1, RWARG2, MemOperand(sp));
-    rvAsm->add(sp, sp, 16);
-    rvAsm->ldr(RMEMBASE, PTR(&g_state.fastmem_base));
+    rvAsm->SW(RARG2, 8, sp);
+    rvAsm->SW(RARG1, 0, sp);
+    rvAsm->ADDI(sp, sp, 16);
+    rvAsm->LD(RMEMBASE, PTR(&g_state.fastmem_base));
     SwitchToNearCode(true);
   }
 
   if (reg == Cop0Reg::SR || reg == Cop0Reg::CAUSE)
   {
-    const WRegister sr = (reg == Cop0Reg::SR) ? RWARG2 : (rvAsm->ldr(RWARG1, PTR(&g_state.cop0_regs.sr.bits)), RWARG1);
+    const GPR sr = (reg == Cop0Reg::SR) ? RARG2 : (rvAsm->LW(RARG1, PTR(&g_state.cop0_regs.sr.bits)), RARG1);
     TestInterrupts(sr);
   }
 
@@ -1938,28 +1931,33 @@ void CPU::NewRec::RISCV64Compiler::Compile_mtc0(CompileFlags cf)
 void CPU::NewRec::RISCV64Compiler::Compile_rfe(CompileFlags cf)
 {
   // shift mode bits right two, preserving upper bits
-  rvAsm->ldr(RWARG1, PTR(&g_state.cop0_regs.sr.bits));
-  rvAsm->ubfx(RWARG2, RWARG1, 2, 4);
-  rvAsm->bfi(RWARG1, RWARG2, 0, 4);
-  rvAsm->str(RWARG1, PTR(&g_state.cop0_regs.sr.bits));
+  rvAsm->LW(RARG1, PTR(&g_state.cop0_regs.sr.bits));
+  rvAsm->SRLIW(RSCRATCH, RARG1, 2);
+  rvAsm->ANDI(RSCRATCH, RARG1, 0xf);
+  rvAsm->ANDI(RARG1, RARG1, ~0xfu);
+  rvAsm->OR(RARG1, RARG1, RSCRATCH);
+  rvAsm->SW(RARG1, PTR(&g_state.cop0_regs.sr.bits));
 
-  TestInterrupts(RWARG1);
+  TestInterrupts(RARG1);
 }
 
 void CPU::NewRec::RISCV64Compiler::TestInterrupts(const biscuit::GPR& sr)
 {
+  DebugAssert(sr != RSCRATCH);
+
   // if Iec == 0 then goto no_interrupt
   Label no_interrupt;
-  rvAsm->tbz(sr, 0, &no_interrupt);
+  rvAsm->ANDI(RSCRATCH, sr, 1);
+  rvAsm->BEQZ(RSCRATCH, &no_interrupt);
 
   // sr & cause
-  rvAsm->ldr(RWSCRATCH, PTR(&g_state.cop0_regs.cause.bits));
-  rvAsm->and_(sr, sr, RWSCRATCH);
+  rvAsm->LW(RSCRATCH, PTR(&g_state.cop0_regs.cause.bits));
+  rvAsm->AND(sr, sr, RSCRATCH);
 
   // ((sr & cause) & 0xff00) == 0 goto no_interrupt
-  rvAsm->tst(sr, 0xFF00);
-
-  SwitchToFarCode(true, ne);
+  rvAsm->SRLIW(sr, sr, 8);
+  rvAsm->ANDI(sr, sr, 0xFF);
+  SwitchToFarCode(true, &Assembler::BEQ, sr, zero);
   BackupHostState();
   Flush(FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_EXCEPTION | FLUSH_FOR_C_CALL);
   EmitCall(reinterpret_cast<const void*>(&DispatchInterrupt));
@@ -1967,10 +1965,8 @@ void CPU::NewRec::RISCV64Compiler::TestInterrupts(const biscuit::GPR& sr)
   RestoreHostState();
   SwitchToNearCode(false);
 
-  rvAsm->bind(&no_interrupt);
+  rvAsm->Bind(&no_interrupt);
 }
-
-#endif
 
 void CPU::NewRec::RISCV64Compiler::Compile_mfc2(CompileFlags cf)
 {
@@ -2022,7 +2018,7 @@ void CPU::NewRec::RISCV64Compiler::Compile_mtc2(CompileFlags cf)
     const bool sign = (action == GTERegisterAccessAction::SignExtend16);
     if (cf.valid_host_t)
     {
-      sign ? SExtH(RARG1, CFGetRegT(cf)) : UExtH(RARG1, CFGetRegT(cf));
+      sign ? EmitSExtH(RARG1, CFGetRegT(cf)) : EmitUExtH(RARG1, CFGetRegT(cf));
       rvAsm->SW(RARG1, PTR(ptr));
     }
     else if (cf.const_t)
@@ -2077,153 +2073,153 @@ void CPU::NewRec::RISCV64Compiler::Compile_cop2(CompileFlags cf)
   AddGTETicks(func_ticks);
 }
 
-void CPU::NewRec::RISCV64Compiler::SExtH(const biscuit::GPR& rd, const biscuit::GPR& rs)
-{
-  rvAsm->SLLI(rd, rs, 16);
-  rvAsm->SRAIW(rd, rd, 16);
-}
-
-void CPU::NewRec::RISCV64Compiler::UExtH(const biscuit::GPR& rd, const biscuit::GPR& rs)
-{
-  rvAsm->SLLI(rd, rs, 16);
-  rvAsm->SRLI(rd, rd, 16);
-}
-
-#if 0
-
 u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
 {
   Assembler actual_asm(code, code_size);
-  Assembler* armAsm = &actual_asm;
-
-#ifdef VIXL_DEBUG
-  vixl::CodeBufferCheckScope asm_check(armAsm, code_size, vixl::CodeBufferCheckScope::kDontReserveBufferSpace);
-#endif
+  Assembler* rvAsm = &actual_asm;
 
   Label dispatch;
 
-  g_enter_recompiler = armAsm->GetCursorAddress<const void*>();
+  g_enter_recompiler = rvAsm->GetCursorPointer();
   {
     // Save all callee-saved regs so we don't need to.
     // TODO: reserve some space for saving caller-saved registers
-    armAsm->sub(sp, sp, 144);
-    armAsm->stp(x19, x20, MemOperand(sp, 32));
-    armAsm->stp(x21, x22, MemOperand(sp, 48));
-    armAsm->stp(x23, x24, MemOperand(sp, 64));
-    armAsm->stp(x25, x26, MemOperand(sp, 80));
-    armAsm->stp(x27, x28, MemOperand(sp, 96));
-    armAsm->stp(x29, lr, MemOperand(sp, 112));
+    rvAsm->ADDI(sp, sp, -112);
+    rvAsm->SD(ra, 0, sp);
+    rvAsm->SD(s11, 8, sp);
+    rvAsm->SD(s10, 16, sp);
+    rvAsm->SD(s9, 24, sp);
+    rvAsm->SD(biscuit::s8, 32, sp);
+    rvAsm->SD(s7, 40, sp);
+    rvAsm->SD(s6, 48, sp);
+    rvAsm->SD(s5, 56, sp);
+    rvAsm->SD(s4, 64, sp);
+    rvAsm->SD(s3, 72, sp);
+    rvAsm->SD(s2, 80, sp);
+    rvAsm->SD(s1, 88, sp);
+    rvAsm->SD(s0, 96, sp);
 
     // Need the CPU state for basically everything :-)
-    armMoveAddressToReg(armAsm, RSTATE, &g_state);
+    rvMoveAddressToReg(rvAsm, RSTATE, &g_state);
 
     // Fastmem setup
     if (g_settings.IsUsingFastmem())
-      armAsm->ldr(RMEMBASE, PTR(&g_state.fastmem_base));
+      rvAsm->LD(RMEMBASE, PTR(&g_state.fastmem_base));
 
     // Downcount isn't set on entry, so we need to initialize it
-    armMoveAddressToReg(armAsm, RXARG1, TimingEvents::GetHeadEventPtr());
-    armAsm->ldr(RXARG1, MemOperand(RXARG1));
-    armAsm->ldr(RWARG1, MemOperand(RXARG1, offsetof(TimingEvent, m_downcount)));
-    armAsm->str(RWARG1, PTR(&g_state.downcount));
+    rvMoveAddressToReg(rvAsm, RARG1, TimingEvents::GetHeadEventPtr());
+    rvAsm->LD(RARG1, 0, RARG1);
+    rvAsm->LW(RARG1, offsetof(TimingEvent, m_downcount), RARG1);
+    rvAsm->SW(RARG1, PTR(&g_state.downcount));
 
     // Fall through to event dispatcher
   }
 
   // check events then for frame done
-  g_check_events_and_dispatch = armAsm->GetCursorAddress<const void*>();
+  g_check_events_and_dispatch = rvAsm->GetCursorPointer();
   {
     Label update_downcount, check_interrupts;
-    armMoveAddressToReg(armAsm, RXARG1, TimingEvents::GetHeadEventPtr());
-    armAsm->ldr(RXARG1, MemOperand(RXARG1));
-    armAsm->ldr(RWARG1, MemOperand(RXARG1, offsetof(TimingEvent, m_downcount)));
-    armAsm->ldr(RWARG2, PTR(&g_state.pending_ticks));
-    armAsm->cmp(RWARG1, RWARG2);
-    armAsm->b(&update_downcount, gt);
-    armEmitCall(armAsm, reinterpret_cast<const void*>(&TimingEvents::RunEvents), true);
-    armAsm->b(&check_interrupts);
+    rvMoveAddressToReg(rvAsm, RARG1, TimingEvents::GetHeadEventPtr());
+    rvAsm->LD(RARG1, 0, RARG1);
+    rvAsm->LW(RARG1, offsetof(TimingEvent, m_downcount), RARG1);
+    rvAsm->LW(RARG2, PTR(&g_state.pending_ticks));
+    rvAsm->BGTU(RARG1, RARG2, &update_downcount);
+    rvEmitCall(rvAsm, reinterpret_cast<const void*>(&TimingEvents::RunEvents));
+    rvAsm->J(&check_interrupts);
 
     // TODO: this _shouldn't_ be necessary, because if we're flagging IRQ, then downcount should get restored.
-    armAsm->bind(&update_downcount);
-    armAsm->ldr(RWARG1, PTR(&g_state.downcount));
+    rvAsm->Bind(&update_downcount);
+    rvAsm->SW(RARG1, PTR(&g_state.downcount));
 
-    armAsm->bind(&check_interrupts);
+    rvAsm->Bind(&check_interrupts);
 
     // eax <- sr
-    armAsm->ldr(RWARG1, PTR(&g_state.cop0_regs.sr.bits));
+    rvAsm->LW(RARG1, PTR(&g_state.cop0_regs.sr.bits));
 
     // if Iec == 0 then goto no_interrupt
-    armAsm->tbz(RWARG1, 0, &dispatch);
+    rvAsm->ANDI(RARG2, RARG1, 1);
+    rvAsm->BEQZ(RARG2, &dispatch);
 
     // sr & cause
-    armAsm->ldr(RWARG2, PTR(&g_state.cop0_regs.cause.bits));
-    armAsm->and_(RWARG1, RWARG1, RWARG2);
+    rvAsm->LW(RARG2, PTR(&g_state.cop0_regs.cause.bits));
+    rvAsm->AND(RARG1, RARG1, RARG2);
 
     // ((sr & cause) & 0xff00) == 0 goto no_interrupt
-    armAsm->tst(RWARG1, 0xFF00);
-    armAsm->b(&dispatch, eq);
+    rvAsm->SRLI(RARG2, RARG2, 8);
+    rvAsm->ANDI(RARG2, RARG2, 0xFF);
+    rvAsm->BEQZ(RARG2, &dispatch);
 
     // we have an interrupt
-    armEmitCall(armAsm, reinterpret_cast<const void*>(&DispatchInterrupt), true);
+    rvEmitCall(rvAsm, reinterpret_cast<const void*>(&DispatchInterrupt));
   }
 
   // TODO: align?
-  g_dispatcher = armAsm->GetCursorAddress<const void*>();
+  g_dispatcher = rvAsm->GetCursorPointer();
   {
-    armAsm->bind(&dispatch);
+    rvAsm->Bind(&dispatch);
 
     // x9 <- s_fast_map[pc >> 16]
-    armAsm->ldr(RWARG1, PTR(&g_state.pc));
-    armMoveAddressToReg(armAsm, RXARG3, g_fast_map.data());
-    armAsm->lsr(RWARG2, RWARG1, 16);
-    armAsm->lsr(RWARG1, RWARG1, 2);
-    armAsm->ldr(RXARG2, MemOperand(RXARG3, RXARG2, LSL, 3));
+    rvAsm->LWU(RARG1, PTR(&g_state.pc));
+    rvMoveAddressToReg(rvAsm, RARG3, g_fast_map.data());
+    rvAsm->SRLI(RARG2, RARG1, 16);
+    rvAsm->SLLI(RARG1, RARG1, 1);
+    rvAsm->SLLI(RARG2, RARG2, 3);
+    rvAsm->ADD(RARG2, RARG2, RARG3);
+    rvAsm->LD(RARG2, 0, RARG2);
 
     // blr(x9[pc * 2]) (fast_map[pc >> 2])
-    armAsm->ldr(RXARG1, MemOperand(RXARG2, RXARG1, LSL, 3));
-    armAsm->blr(RXARG1);
+    rvAsm->ADD(RARG1, RARG1, RARG2);
+    rvAsm->LD(RARG1, 0, RARG1);
+    rvAsm->JR(RARG1);
   }
 
-  g_compile_or_revalidate_block = armAsm->GetCursorAddress<const void*>();
+  g_compile_or_revalidate_block = rvAsm->GetCursorPointer();
   {
-    armAsm->ldr(RWARG1, PTR(&g_state.pc));
-    armEmitCall(armAsm, reinterpret_cast<const void*>(&CompileOrRevalidateBlock), true);
-    armAsm->b(&dispatch);
+    rvAsm->LW(RARG1, PTR(&g_state.pc));
+    rvEmitCall(rvAsm, reinterpret_cast<const void*>(&CompileOrRevalidateBlock));
+    rvAsm->J(&dispatch);
   }
 
-  g_exit_recompiler = armAsm->GetCursorAddress<const void*>();
+  g_exit_recompiler = rvAsm->GetCursorPointer();
   {
-    armAsm->ldp(x29, lr, MemOperand(sp, 112));
-    armAsm->ldp(x27, x28, MemOperand(sp, 96));
-    armAsm->ldp(x25, x26, MemOperand(sp, 80));
-    armAsm->ldp(x23, x24, MemOperand(sp, 64));
-    armAsm->ldp(x21, x22, MemOperand(sp, 48));
-    armAsm->ldp(x19, x20, MemOperand(sp, 32));
-    armAsm->add(sp, sp, 144);
-    armAsm->ret();
+    rvAsm->LD(s0, 96, sp);
+    rvAsm->LD(s1, 88, sp);
+    rvAsm->LD(s2, 80, sp);
+    rvAsm->LD(s3, 72, sp);
+    rvAsm->LD(s4, 64, sp);
+    rvAsm->LD(s5, 56, sp);
+    rvAsm->LD(s6, 48, sp);
+    rvAsm->LD(s7, 40, sp);
+    rvAsm->LD(biscuit::s8, 32, sp);
+    rvAsm->LD(s9, 24, sp);
+    rvAsm->LD(s10, 16, sp);
+    rvAsm->LD(s11, 8, sp);
+    rvAsm->LD(ra, 0, sp);
+    rvAsm->ADDI(sp, sp, 112);
+    rvAsm->JR(ra);
   }
-
-  armAsm->FinalizeCode();
 
   // TODO: align?
-  s_trampoline_targets.clear();
-  s_trampoline_start_ptr = code + armAsm->GetCursorOffset();
-  s_trampoline_used = 0;
 
-  return static_cast<u32>(armAsm->GetCursorOffset()) + TRAMPOLINE_AREA_SIZE;
+  return static_cast<u32>(rvAsm->GetCodeBuffer().GetSizeInBytes());
 }
 
 u32 CPU::NewRec::EmitJump(void* code, const void* dst, bool flush_icache)
 {
-  const s64 disp = armGetPCDisplacement(code, dst);
-  DebugAssert(vixl::IsInt26(disp));
+  // TODO: get rid of assembler construction here
+  {
+    Assembler assembler(static_cast<u8*>(code), BLOCK_LINK_SIZE);
+    rvEmitCall(&assembler, dst);
 
-  const u32 new_code = B | Assembler::ImmUncondBranch(disp);
-  std::memcpy(code, &new_code, sizeof(new_code));
+    DebugAssert(assembler.GetCodeBuffer().GetSizeInBytes() < BLOCK_LINK_SIZE);
+    if (assembler.GetCodeBuffer().GetRemainingBytes() > 0)
+      assembler.NOP();
+  }
+
   if (flush_icache)
-    rvFlushInstructionCache(code, kInstructionSize);
+    rvFlushInstructionCache(code, BLOCK_LINK_SIZE);
 
-  return kInstructionSize;
+  return BLOCK_LINK_SIZE;
 }
 
 u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* code_address, u32 code_size,
@@ -2232,11 +2228,7 @@ u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* cod
                                     bool is_load)
 {
   Assembler arm_asm(static_cast<u8*>(thunk_code), thunk_space);
-  Assembler* armAsm = &arm_asm;
-
-#ifdef VIXL_DEBUG
-  vixl::CodeBufferCheckScope asm_check(armAsm, thunk_space, vixl::CodeBufferCheckScope::kDontReserveBufferSpace);
-#endif
+  Assembler* rvAsm = &arm_asm;
 
   static constexpr u32 GPR_SIZE = 8;
 
@@ -2251,18 +2243,16 @@ u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* cod
 
   const u32 stack_size = (((num_gprs + 1) & ~1u) * GPR_SIZE);
 
-  // TODO: use stp+ldp, vixl helper?
-
   if (stack_size > 0)
   {
-    armAsm->sub(sp, sp, stack_size);
+    rvAsm->ADDI(sp, sp, -static_cast<s32>(stack_size));
 
     u32 stack_offset = 0;
     for (u32 i = 0; i < NUM_HOST_REGS; i++)
     {
       if ((gpr_bitmask & (1u << i)) && rvIsCallerSavedRegister(i) && (!is_load || data_register != i))
       {
-        armAsm->str(XRegister(i), MemOperand(sp, stack_offset));
+        rvAsm->SD(GPR(i), stack_offset, sp);
         stack_offset += GPR_SIZE;
       }
     }
@@ -2271,68 +2261,62 @@ u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* cod
   if (cycles_to_add != 0)
   {
     // NOTE: we have to reload here, because memory writes can run DMA, which can screw with cycles
-    Assert(Assembler::IsImmAddSub(cycles_to_add));
-    armAsm->ldr(RWSCRATCH, PTR(&g_state.pending_ticks));
-    armAsm->add(RWSCRATCH, RWSCRATCH, cycles_to_add);
-    armAsm->str(RWSCRATCH, PTR(&g_state.pending_ticks));
+    Assert(rvIsValidSExtITypeImm(cycles_to_add));
+    rvAsm->LW(RSCRATCH, PTR(&g_state.pending_ticks));
+    rvAsm->ADDIW(RSCRATCH, RSCRATCH, cycles_to_add);
+    rvAsm->SW(RSCRATCH, PTR(&g_state.pending_ticks));
   }
 
-  if (address_register != static_cast<u8>(RWARG1.GetCode()))
-    armAsm->mov(RWARG1, WRegister(address_register));
+  if (address_register != RARG1.Index())
+    rvAsm->MV(RARG1, GPR(address_register));
 
   if (!is_load)
   {
-    if (address_register != static_cast<u8>(RWARG2.GetCode()))
-      armAsm->mov(RWARG2, WRegister(data_register));
+    if (address_register != RARG2.Index())
+      rvAsm->MV(RARG2, GPR(data_register));
   }
 
   switch (size)
   {
     case MemoryAccessSize::Byte:
     {
-      armEmitCall(armAsm,
-                  is_load ? reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryByte) :
-                            reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryByte),
-                  false);
+      rvEmitCall(rvAsm, is_load ? reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryByte) :
+                                  reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryByte));
     }
     break;
     case MemoryAccessSize::HalfWord:
     {
-      armEmitCall(armAsm,
-                  is_load ? reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryHalfWord) :
-                            reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryHalfWord),
-                  false);
+      rvEmitCall(rvAsm, is_load ? reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryHalfWord) :
+                                  reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryHalfWord));
     }
     break;
     case MemoryAccessSize::Word:
     {
-      armEmitCall(armAsm,
-                  is_load ? reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryWord) :
-                            reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryWord),
-                  false);
+      rvEmitCall(rvAsm, is_load ? reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedReadMemoryWord) :
+                                  reinterpret_cast<const void*>(&Recompiler::Thunks::UncheckedWriteMemoryWord));
     }
     break;
   }
 
   if (is_load)
   {
-    const WRegister dst = WRegister(data_register);
+    const GPR dst = GPR(data_register);
     switch (size)
     {
       case MemoryAccessSize::Byte:
       {
-        is_signed ? armAsm->sxtb(dst, RWRET) : armAsm->uxtb(dst, RWRET);
+        is_signed ? rvEmitSExtB(rvAsm, dst, RRET) : rvEmitUExtB(rvAsm, dst, RRET);
       }
       break;
       case MemoryAccessSize::HalfWord:
       {
-        is_signed ? armAsm->sxth(dst, RWRET) : armAsm->uxth(dst, RWRET);
+        is_signed ? rvEmitSExtH(rvAsm, dst, RRET) : rvEmitUExtH(rvAsm, dst, RRET);
       }
       break;
       case MemoryAccessSize::Word:
       {
-        if (dst.GetCode() != RWRET.GetCode())
-          armAsm->mov(dst, RWRET);
+        if (dst.Index() != RRET.Index())
+          rvAsm->MV(dst, RRET);
       }
       break;
     }
@@ -2340,10 +2324,10 @@ u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* cod
 
   if (cycles_to_remove != 0)
   {
-    Assert(Assembler::IsImmAddSub(cycles_to_add));
-    armAsm->ldr(RWSCRATCH, PTR(&g_state.pending_ticks));
-    armAsm->sub(RWSCRATCH, RWSCRATCH, cycles_to_add);
-    armAsm->str(RWSCRATCH, PTR(&g_state.pending_ticks));
+    Assert(rvIsValidSExtITypeImm(-cycles_to_add));
+    rvAsm->LW(RSCRATCH, PTR(&g_state.pending_ticks));
+    rvAsm->ADDIW(RSCRATCH, RSCRATCH, -cycles_to_add);
+    rvAsm->SW(RSCRATCH, PTR(&g_state.pending_ticks));
   }
 
   // restore regs
@@ -2354,22 +2338,21 @@ u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* cod
     {
       if ((gpr_bitmask & (1u << i)) && rvIsCallerSavedRegister(i) && (!is_load || data_register != i))
       {
-        armAsm->ldr(XRegister(i), MemOperand(sp, stack_offset));
+        rvAsm->LD(GPR(i), stack_offset, sp);
         stack_offset += GPR_SIZE;
       }
     }
 
-    armAsm->add(sp, sp, stack_size);
+    rvAsm->ADDI(sp, sp, stack_size);
   }
 
-  armEmitJmp(armAsm, static_cast<const u8*>(code_address) + code_size, true);
-  armAsm->FinalizeCode();
+  rvEmitJmp(rvAsm, static_cast<const u8*>(code_address) + code_size);
 
-  const u32 thunk_size = static_cast<u32>(armAsm->GetCursorOffset());
+  const u32 thunk_size = static_cast<u32>(rvAsm->GetCodeBuffer().GetSizeInBytes());
   rvFlushInstructionCache(code_address, thunk_size);
 
   // backpatch to a jump to the slowmem handler
-  EmitJump(code_address, armAsm->GetBuffer()->GetStartAddress<const void*>(), true);
+  EmitJump(code_address, rvAsm->GetBufferPointer(0), true);
 
 #ifdef _DEBUG
   rvDisassembleAndDumpCode(thunk_code, thunk_size);
@@ -2377,5 +2360,3 @@ u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* cod
 
   return thunk_size;
 }
-
-#endif

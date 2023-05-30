@@ -7,6 +7,7 @@
       <PreprocessorDefinitions>WITH_CHEEVOS=1;WITH_CUBEB=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessorDefinitions Condition="('$(Platform)'!='ARM64')">WITH_RAINTEGRATION=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessorDefinitions Condition="('$(Platform)'=='x64' Or '$(Platform)'=='ARM' Or '$(Platform)'=='ARM64')">WITH_RECOMPILER=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="('$(Platform)'=='x64' Or '$(Platform)'=='ARM64')">WITH_NEWREC=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessorDefinitions Condition="('$(Platform)'=='x64' Or '$(Platform)'=='ARM64')">WITH_MMAP_FASTMEM=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
 
       <AdditionalIncludeDirectories>$(SolutionDir)dep\tinyxml2\include;$(SolutionDir)dep\glad\include;$(SolutionDir)dep\stb\include;$(SolutionDir)dep\imgui\include;$(SolutionDir)dep\xxhash\include;$(SolutionDir)dep\zlib\include;$(SolutionDir)dep\rcheevos\include;$(SolutionDir)dep\rapidjson\include;$(SolutionDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>

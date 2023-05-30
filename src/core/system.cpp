@@ -3325,7 +3325,7 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
       CPU::ClearICache();
     }
 
-    if (g_settings.IsUsingRecompiler() &&
+    if (g_settings.IsUsingAnyRecompiler() &&
         (g_settings.cpu_recompiler_memory_exceptions != old_settings.cpu_recompiler_memory_exceptions ||
          g_settings.cpu_recompiler_block_linking != old_settings.cpu_recompiler_block_linking ||
          g_settings.cpu_recompiler_icache != old_settings.cpu_recompiler_icache))
