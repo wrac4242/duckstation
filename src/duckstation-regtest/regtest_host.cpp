@@ -99,6 +99,7 @@ bool RegTestHost::InitializeConfig()
   si.SetBoolValue("Logging", "LogToConsole", true);
   si.SetBoolValue("Main", "ApplyGameSettings", false); // don't want game settings interfering
   si.SetBoolValue("BIOS", "PatchFastBoot", true);      // no point validating the bios intro..
+  si.SetFloatValue("Main", "EmulationSpeed", 0.0f);
 
   // disable all sources
   for (u32 i = 0; i < static_cast<u32>(InputSourceType::Count); i++)
@@ -251,7 +252,9 @@ void Host::OnGameChanged(const std::string& disc_path, const std::string& game_s
 
 void Host::OnVBlankStart()
 {
-  //
+  s_frames_to_run--;
+  if (s_frames_to_run == 0)
+    System::ShutdownSystem(false);
 }
 
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
@@ -577,16 +580,7 @@ int main(int argc, char* argv[])
   }
 
   Log_InfoPrintf("Running for %d frames...", s_frames_to_run);
-
-  for (u32 frame = 0; frame < s_frames_to_run; frame++)
-  {
-    System::RunFrame();
-    Host::RenderDisplay(false);
-    System::UpdatePerformanceCounters();
-  }
-
-  Log_InfoPrintf("All done, shutting down system.");
-  System::ShutdownSystem(false);
+  System::Execute();
 
   Log_InfoPrintf("Exiting with success.");
   result = 0;

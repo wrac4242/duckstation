@@ -42,24 +42,24 @@ public:
   bool UpdateImGuiFontTexture() override;
 
   std::unique_ptr<GPUTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
-                                                    GPUTexture::Format format, const void* data, u32 data_stride,
-                                                    bool dynamic = false) override;
+                                            GPUTexture::Format format, const void* data, u32 data_stride,
+                                            bool dynamic = false) override;
   bool BeginTextureUpdate(GPUTexture* texture, u32 width, u32 height, void** out_buffer, u32* out_pitch) override;
   void EndTextureUpdate(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height) override;
-  bool UpdateTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, const void* data, u32 data_stride) override;
+  bool UpdateTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, const void* data,
+                     u32 data_stride) override;
   bool DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
                        u32 out_data_stride) override;
 
   void SetVSync(bool enabled) override;
 
   bool Render(bool skip_present) override;
-  bool RenderScreenshot(u32 width, u32 height, std::vector<u32>* out_pixels, u32* out_stride,
-                        GPUTexture::Format* out_format) override;
+  bool RenderScreenshot(u32 width, u32 height, const Common::Rectangle<s32>& draw_rect, std::vector<u32>* out_pixels,
+                        u32* out_stride, GPUTexture::Format* out_format) override;
 
   bool SupportsTextureFormat(GPUTexture::Format format) const override;
 
 private:
-
 };
 
 class RegTestTexture : public GPUTexture
