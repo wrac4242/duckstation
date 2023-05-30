@@ -189,7 +189,7 @@ elseif(${CPU_ARCH} STREQUAL "aarch64")
   target_link_libraries(core PUBLIC vixl)
   message("Building AArch64 recompiler")
 elseif(${CPU_ARCH} STREQUAL "riscv64")
-  target_compile_definitions(core PUBLIC "WITH_NEWREC=1")
+  target_compile_definitions(core PUBLIC "WITH_NEWREC=1" "WITH_MMAP_FASTMEM=1")
   target_sources(core PRIVATE ${NEWREC_SOURCES}
     cpu_newrec_compiler_riscv64.cpp
     cpu_newrec_compiler_riscv64.h

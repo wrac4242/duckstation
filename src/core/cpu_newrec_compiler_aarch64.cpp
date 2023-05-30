@@ -1186,6 +1186,7 @@ void CPU::NewRec::AArch64Compiler::Compile_div(CompileFlags cf)
   const WRegister rlo = CFGetRegLO(cf);
   const WRegister rhi = CFGetRegHI(cf);
 
+  // TODO: This could be slightly more optimal
   Label done;
   Label not_divide_by_zero;
   armAsm->cbnz(rt, &not_divide_by_zero);
@@ -2354,7 +2355,7 @@ u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* cod
 
   if (!is_load)
   {
-    if (address_register != static_cast<u8>(RWARG2.GetCode()))
+    if (data_register != static_cast<u8>(RWARG2.GetCode()))
       armAsm->mov(RWARG2, WRegister(data_register));
   }
 

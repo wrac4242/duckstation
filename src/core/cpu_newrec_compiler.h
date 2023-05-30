@@ -25,6 +25,9 @@ static constexpr bool HAS_MEMORY_OPERANDS = true;
 #elif defined(CPU_AARCH64)
 static constexpr u32 NUM_HOST_REGS = 32;
 static constexpr bool HAS_MEMORY_OPERANDS = false;
+#elif defined(CPU_RISCV64)
+static constexpr u32 NUM_HOST_REGS = 32;
+static constexpr bool HAS_MEMORY_OPERANDS = false;
 #endif
 
 class Compiler

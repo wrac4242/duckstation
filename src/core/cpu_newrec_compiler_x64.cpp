@@ -1297,7 +1297,7 @@ void CPU::NewRec::X64Compiler::GenerateLoad(const Xbyak::Reg32& addr_reg, Memory
                                             const RegAllocFn& dst_reg_alloc)
 {
   const bool checked = g_settings.cpu_recompiler_memory_exceptions;
-  if (!checked && g_settings.IsUsingFastmem())
+  if (g_settings.IsUsingFastmem())
   {
     m_cycles += Bus::RAM_READ_TICKS;
 
@@ -1416,7 +1416,7 @@ void CPU::NewRec::X64Compiler::GenerateStore(const Xbyak::Reg32& addr_reg, const
                                              MemoryAccessSize size)
 {
   const bool checked = g_settings.cpu_recompiler_memory_exceptions;
-  if (!checked && g_settings.IsUsingFastmem())
+  if (g_settings.IsUsingFastmem())
   {
     u8* start = cg->getCurr<u8*>();
     switch (size)
@@ -2225,7 +2225,7 @@ u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* cod
 
   if (!is_load)
   {
-    if (address_register != static_cast<u8>(RWARG2.getIdx()))
+    if (data_register != static_cast<u8>(RWARG2.getIdx()))
       cg->mov(RWARG2, Reg32(data_register));
   }
 

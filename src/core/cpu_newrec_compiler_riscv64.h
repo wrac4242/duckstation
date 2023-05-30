@@ -69,10 +69,11 @@ protected:
   void Compile_multu(CompileFlags cf) override;
   void Compile_div(CompileFlags cf) override;
   void Compile_divu(CompileFlags cf) override;
-  void TestOverflow(const biscuit::GPR& result);
+  void TestOverflow(const biscuit::GPR& long_res, const biscuit::GPR& res, const biscuit::GPR& reg_to_discard);
   void Compile_dst_op(CompileFlags cf, void (biscuit::Assembler::*op)(biscuit::GPR, biscuit::GPR, biscuit::GPR),
                       void (RISCV64Compiler::*op_const)(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm),
-                      bool commutative, bool overflow);
+                      void (biscuit::Assembler::*op_long)(biscuit::GPR, biscuit::GPR, biscuit::GPR), bool commutative,
+                      bool overflow);
   void Compile_add(CompileFlags cf) override;
   void Compile_addu(CompileFlags cf) override;
   void Compile_sub(CompileFlags cf) override;
@@ -129,6 +130,7 @@ private:
                         void (biscuit::Assembler::*iop)(biscuit::GPR, biscuit::GPR, u32),
                         void (biscuit::Assembler::*rop)(biscuit::GPR, biscuit::GPR, biscuit::GPR));
 
+  void SafeADDI(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm);
   void SafeADDIW(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm);
   void SafeSUBIW(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm);
   void SafeANDI(const biscuit::GPR& rd, const biscuit::GPR& rs, u32 imm);

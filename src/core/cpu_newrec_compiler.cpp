@@ -1291,6 +1291,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   // TODO: andi with zero -> zero const
   // TODO: load constant so it can be flushed if it's not overwritten later
   // TODO: inline PGXP ops.
+  // TODO: don't rename on sltu.
 
   bool allow_constant = static_cast<bool>(const_func);
   Reg rs = inst->r.rs.GetValue();

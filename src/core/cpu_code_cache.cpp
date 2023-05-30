@@ -9,6 +9,7 @@
 #include "cpu_core_private.h"
 #include "cpu_disasm.h"
 #include "cpu_newrec_private.h"
+#include "cpu_recompiler_types.h"
 #include "settings.h"
 #include "system.h"
 #include "timing_event.h"

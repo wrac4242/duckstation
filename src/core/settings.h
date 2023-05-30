@@ -282,7 +282,7 @@ struct Settings
 
   ALWAYS_INLINE bool IsUsingFastmem() const
   {
-    return (cpu_fastmem_mode != CPUFastmemMode::Disabled && IsUsingRecompiler() && !cpu_recompiler_memory_exceptions);
+    return (cpu_fastmem_mode != CPUFastmemMode::Disabled && IsUsingAnyRecompiler() && !cpu_recompiler_memory_exceptions);
   }
 
   ALWAYS_INLINE s32 GetAudioOutputVolume(bool fast_forwarding) const
@@ -419,13 +419,16 @@ struct Settings
   static constexpr float DEFAULT_GPU_PGXP_DEPTH_THRESHOLD = 300.0f;
   static constexpr float GPU_PGXP_DEPTH_THRESHOLD_SCALE = 4096.0f;
 
-#ifdef WITH_RECOMPILER
+#if defined(WITH_RECOMPILER)
   static constexpr CPUExecutionMode DEFAULT_CPU_EXECUTION_MODE = CPUExecutionMode::Recompiler;
 #ifdef WITH_MMAP_FASTMEM
   static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::MMap;
 #else
   static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::LUT;
 #endif
+#elif defined(WITH_NEWREC)
+  static constexpr CPUExecutionMode DEFAULT_CPU_EXECUTION_MODE = CPUExecutionMode::NewRec;
+  static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::MMap;
 #else
   static constexpr CPUExecutionMode DEFAULT_CPU_EXECUTION_MODE = CPUExecutionMode::CachedInterpreter;
   static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::Disabled;

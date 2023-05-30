@@ -95,7 +95,6 @@ bool RegTestHost::InitializeConfig()
   si.SetStringValue("MemoryCards", "Card2Type", Settings::GetMemoryCardTypeName(MemoryCardType::None));
   si.SetStringValue("ControllerPorts", "MultitapMode", Settings::GetMultitapModeName(MultitapMode::Disabled));
   si.SetStringValue("Audio", "Backend", Settings::GetAudioBackendName(AudioBackend::Null));
-  si.SetStringValue("Logging", "LogLevel", Settings::GetLogLevelName(LOGLEVEL_VERBOSE));
   si.SetBoolValue("Logging", "LogToConsole", true);
   si.SetBoolValue("Main", "ApplyGameSettings", false); // don't want game settings interfering
   si.SetBoolValue("BIOS", "PatchFastBoot", true);      // no point validating the bios intro..
@@ -499,6 +498,7 @@ bool RegTestHost::ParseCommandLineParameters(int argc, char* argv[], std::option
         }
 
         Log::SetConsoleOutputParams(true, nullptr, level.value());
+        s_base_settings_interface->SetStringValue("Logging", "LogLevel", Settings::GetLogLevelName(level.value()));
         continue;
       }
       else if (CHECK_ARG_PARAM("-renderer"))
