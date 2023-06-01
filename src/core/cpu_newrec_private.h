@@ -127,8 +127,7 @@ u32 BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* code_address, u3
 
 extern CodeLUTArray g_fast_map;
 
-extern const void* g_enter_recompiler;
-extern const void* g_exit_recompiler;
+extern NORETURN_FUNCTION_POINTER void(*g_enter_recompiler)();
 extern const void* g_compile_or_revalidate_block;
 extern const void* g_check_events_and_dispatch;
 extern const void* g_dispatcher;

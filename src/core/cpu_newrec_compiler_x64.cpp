@@ -2041,31 +2041,18 @@ u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
   Label dispatch;
   Label exit_recompiler;
 
-  u32 stack_save_size = 0;
-  u32 stack_offset = 0;
-  g_enter_recompiler = cg->getCurr();
+  g_enter_recompiler = reinterpret_cast<decltype(g_enter_recompiler)>(cg->getCurr());
   {
-    // Save all callee-saved regs so we don't need to.
-    for (u32 i = 0; i < NUM_HOST_REGS; i++)
-    {
-      if (!IsCallerSavedRegister(i))
-        stack_save_size += sizeof(void*);
-    }
-    stack_save_size += Common::IsAlignedPow2(stack_save_size + 8, 16) ? 0 : 8;
+    // Don't need to save registers, because we fastjmp out when execution is interrupted.
+
 #ifdef _WIN32
     // Shadow space for Win32
-    stack_save_size += 32;
-    stack_offset = 32;
+    constexpr u32 stack_size = 32 + 8;
+#else
+    // Stack still needs to be aligned
+    constexpr u32 stack_size = 8;
 #endif
-    cg->sub(cg->rsp, stack_save_size);
-    for (u32 i = 0, cur_stack_offset = stack_offset; i < NUM_HOST_REGS; i++)
-    {
-      if (!IsCallerSavedRegister(i))
-      {
-        cg->mov(cg->qword[cg->rsp + cur_stack_offset], Reg64(i));
-        cur_stack_offset += sizeof(void*);
-      }
-    }
+    cg->sub(cg->rsp, stack_size);
 
     // Fastmem setup
     if (g_settings.IsUsingFastmem())
@@ -2135,26 +2122,6 @@ u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
     cg->mov(RWARG1, cg->dword[PTR(&g_state.pc)]);
     cg->call(&CompileOrRevalidateBlock);
     cg->jmp(dispatch);
-  }
-
-  g_exit_recompiler = cg->getCurr();
-  {
-    cg->L(exit_recompiler);
-
-    // TODO: reverse order
-    for (u32 i = 0, cur_stack_offset = stack_offset; i < NUM_HOST_REGS; i++)
-    {
-      if (!IsCallerSavedRegister(i))
-      {
-        cg->mov(Reg64(i), cg->qword[cg->rsp + cur_stack_offset]);
-        cur_stack_offset += sizeof(void*);
-      }
-    }
-
-    // TODO: Fixme
-    // cg->ret(stack_save_size);
-    cg->add(cg->rsp, stack_save_size);
-    cg->ret();
   }
 
   return static_cast<u32>(cg->getSize());

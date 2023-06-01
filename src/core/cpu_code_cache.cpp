@@ -434,7 +434,7 @@ FastMapTable* GetFastMapPointer()
   return s_fast_map;
 }
 
-static void ExecuteRecompiler()
+[[noreturn]] static void ExecuteRecompiler()
 {
 #if 0
   for (;;)
@@ -457,10 +457,6 @@ static void ExecuteRecompiler()
 #else
   s_asm_dispatcher();
 #endif
-
-  // in case we switch to interpreter...
-  // TODO: fixme
-  g_state.npc = g_state.pc;
 }
 
 #endif
@@ -994,7 +990,7 @@ void InvalidateAll()
 #ifdef WITH_NEWREC
   if (g_settings.IsUsingNewRec())
   {
-    NewRec::InvalidateAllBlocks();
+    NewRec::InvalidateAllRAMBlocks();
     return;
   }
 #endif

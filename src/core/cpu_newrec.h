@@ -11,8 +11,8 @@ namespace CPU::NewRec
 bool Initialize();
 void Reset();
 void Shutdown();
-void Execute();
-void InvalidateAllBlocks();
+[[noreturn]] void Execute();
+void InvalidateAllRAMBlocks();
 void InvalidateBlocksWithPageNumber(u32 index);
 }
 

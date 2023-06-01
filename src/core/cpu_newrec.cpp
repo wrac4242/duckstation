@@ -63,8 +63,7 @@ static std::vector<Instruction> s_block_instructions;
 static std::unordered_map<const void*, LoadstoreBackpatchInfo> s_fastmem_backpatch_info;
 static std::unordered_set<u32> s_fastmem_faulting_pcs;
 
-const void* g_enter_recompiler;
-const void* g_exit_recompiler;
+NORETURN_FUNCTION_POINTER void(*g_enter_recompiler)();
 const void* g_compile_or_revalidate_block;
 const void* g_check_events_and_dispatch;
 const void* g_dispatcher;
@@ -279,7 +278,7 @@ CPU::NewRec::Block* CPU::NewRec::CreateBlock(u32 pc)
 
 bool CPU::NewRec::RevalidateBlock(Block* block)
 {
-  DebugAssert(block->invalidated && !block->next_block_in_page);
+  DebugAssert(block->invalidated);
   DebugAssert(BlockInRAM(block->pc));
 
   // blocks shouldn't be wrapping..
@@ -338,9 +337,10 @@ void CPU::NewRec::CompileOrRevalidateBlock(u32 start_pc)
 
 void CPU::NewRec::AddBlockToPageList(Block* block)
 {
-  if (!BlockInRAM(block->pc))
+  if (!BlockInRAM(block->pc) || block->next_block_in_page)
     return;
 
+  // TODO: what about blocks which span more than one page?
   const u32 page_idx = Bus::GetRAMCodePageIndex(VirtualMemoryAddress(block->pc));
   Bus::SetRAMCodePage(page_idx);
 
@@ -436,9 +436,9 @@ void CPU::NewRec::Shutdown()
   ShutdownFastmem();
 }
 
-void CPU::NewRec::Execute()
+[[noreturn]] void CPU::NewRec::Execute()
 {
-  reinterpret_cast<void (*)()>(const_cast<void*>(g_enter_recompiler))();
+  g_enter_recompiler();
 }
 
 void CPU::NewRec::InvalidateBlock(Block* block)
@@ -451,15 +451,15 @@ void CPU::NewRec::InvalidateBlock(Block* block)
   block->invalidated = true;
 }
 
-void CPU::NewRec::InvalidateAllBlocks()
+void CPU::NewRec::InvalidateAllRAMBlocks()
 {
   // TODO: maybe combine the backlink into one big instruction flush cache?
 
   for (Block* block : s_blocks)
-    InvalidateBlock(block);
-
-  // TODO: check the asm for this
-  s_page_block_lookup = {};
+  {
+    if (BlockInRAM(block->pc))
+      InvalidateBlock(block);
+  }
 }
 
 void CPU::NewRec::InvalidateBlocksWithPageNumber(u32 index)

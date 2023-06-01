@@ -2175,17 +2175,9 @@ u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
 
   Label dispatch;
 
-  g_enter_recompiler = armAsm->GetCursorAddress<const void*>();
+  g_enter_recompiler = reinterpret_cast<decltype(g_enter_recompiler)>(armAsm->GetCursorAddress<const void*>());
   {
-    // Save all callee-saved regs so we don't need to.
     // TODO: reserve some space for saving caller-saved registers
-    armAsm->sub(sp, sp, 144);
-    armAsm->stp(x19, x20, MemOperand(sp, 32));
-    armAsm->stp(x21, x22, MemOperand(sp, 48));
-    armAsm->stp(x23, x24, MemOperand(sp, 64));
-    armAsm->stp(x25, x26, MemOperand(sp, 80));
-    armAsm->stp(x27, x28, MemOperand(sp, 96));
-    armAsm->stp(x29, lr, MemOperand(sp, 112));
 
     // Need the CPU state for basically everything :-)
     armMoveAddressToReg(armAsm, RSTATE, &g_state);
@@ -2262,18 +2254,6 @@ u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
     armAsm->ldr(RWARG1, PTR(&g_state.pc));
     armEmitCall(armAsm, reinterpret_cast<const void*>(&CompileOrRevalidateBlock), true);
     armAsm->b(&dispatch);
-  }
-
-  g_exit_recompiler = armAsm->GetCursorAddress<const void*>();
-  {
-    armAsm->ldp(x29, lr, MemOperand(sp, 112));
-    armAsm->ldp(x27, x28, MemOperand(sp, 96));
-    armAsm->ldp(x25, x26, MemOperand(sp, 80));
-    armAsm->ldp(x23, x24, MemOperand(sp, 64));
-    armAsm->ldp(x21, x22, MemOperand(sp, 48));
-    armAsm->ldp(x19, x20, MemOperand(sp, 32));
-    armAsm->add(sp, sp, 144);
-    armAsm->ret();
   }
 
   armAsm->FinalizeCode();

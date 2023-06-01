@@ -2111,24 +2111,9 @@ u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
 
   Label dispatch;
 
-  g_enter_recompiler = rvAsm->GetCursorPointer();
+  g_enter_recompiler = reinterpret_cast<decltype(g_enter_recompiler)>(rvAsm->GetCursorPointer());
   {
-    // Save all callee-saved regs so we don't need to.
     // TODO: reserve some space for saving caller-saved registers
-    rvAsm->ADDI(sp, sp, -112);
-    rvAsm->SD(ra, 0, sp);
-    rvAsm->SD(s11, 8, sp);
-    rvAsm->SD(s10, 16, sp);
-    rvAsm->SD(s9, 24, sp);
-    rvAsm->SD(biscuit::s8, 32, sp);
-    rvAsm->SD(s7, 40, sp);
-    rvAsm->SD(s6, 48, sp);
-    rvAsm->SD(s5, 56, sp);
-    rvAsm->SD(s4, 64, sp);
-    rvAsm->SD(s3, 72, sp);
-    rvAsm->SD(s2, 80, sp);
-    rvAsm->SD(s1, 88, sp);
-    rvAsm->SD(s0, 96, sp);
 
     // Need the CPU state for basically everything :-)
     rvMoveAddressToReg(rvAsm, RSTATE, &g_state);
@@ -2209,25 +2194,6 @@ u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
     rvAsm->LW(RARG1, PTR(&g_state.pc));
     rvEmitCall(rvAsm, reinterpret_cast<const void*>(&CompileOrRevalidateBlock));
     rvAsm->J(&dispatch);
-  }
-
-  g_exit_recompiler = rvAsm->GetCursorPointer();
-  {
-    rvAsm->LD(s0, 96, sp);
-    rvAsm->LD(s1, 88, sp);
-    rvAsm->LD(s2, 80, sp);
-    rvAsm->LD(s3, 72, sp);
-    rvAsm->LD(s4, 64, sp);
-    rvAsm->LD(s5, 56, sp);
-    rvAsm->LD(s6, 48, sp);
-    rvAsm->LD(s7, 40, sp);
-    rvAsm->LD(biscuit::s8, 32, sp);
-    rvAsm->LD(s9, 24, sp);
-    rvAsm->LD(s10, 16, sp);
-    rvAsm->LD(s11, 8, sp);
-    rvAsm->LD(ra, 0, sp);
-    rvAsm->ADDI(sp, sp, 112);
-    rvAsm->JR(ra);
   }
 
   // TODO: align?

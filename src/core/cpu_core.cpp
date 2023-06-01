@@ -2094,16 +2094,24 @@ static void ExecuteDebug()
 
 void Execute()
 {
+  const CPUExecutionMode exec_mode = g_settings.cpu_execution_mode;
+  const bool use_debug_dispatcher = g_state.use_debug_dispatcher;
   if (fastjmp_set(&s_jmp_buf) != 0)
-    return;
+  {
+    // Before we return, set npc to pc so that we can switch from recs to int.
+    if (exec_mode != CPUExecutionMode::Interpreter && !use_debug_dispatcher)
+      g_state.npc = g_state.pc;
 
-  if (g_state.use_debug_dispatcher)
+    return;
+  }
+
+  if (use_debug_dispatcher)
   {
     ExecuteDebug();
     return;
   }
 
-  switch (g_settings.cpu_execution_mode)
+  switch (exec_mode)
   {
     case CPUExecutionMode::Recompiler:
     case CPUExecutionMode::CachedInterpreter:

@@ -116,8 +116,6 @@ static void DoRewind();
 static void SaveRunaheadState();
 static void DoRunahead();
 
-static void DoMemorySaveStates();
-
 static bool Initialize(bool force_software_renderer);
 static bool FastForwardToFirstFrame();
 
@@ -1380,6 +1378,10 @@ bool System::Initialize(bool force_software_renderer)
   s_turbo_enabled = false;
   s_fast_forward_enabled = false;
 
+  s_rewind_load_frequency = -1;
+  s_rewind_load_counter = -1;
+  s_rewinding_first_save = true;
+
   s_average_frame_time_accumulator = 0.0f;
   s_minimum_frame_time_accumulator = 0.0f;
   s_maximum_frame_time_accumulator = 0.0f;
@@ -1594,7 +1596,10 @@ void System::Execute()
         // TODO: Purge reset/restore
         g_gpu->RestoreGraphicsAPIState();
 
-        CPU::Execute();
+        if (s_rewind_load_counter >= 0)
+          DoRewind();
+        else
+          CPU::Execute();
 
         g_gpu->ResetGraphicsAPIState();
 
@@ -1618,6 +1623,34 @@ void System::Execute()
 void System::FrameDone()
 {
   s_frame_number++;
+
+  // Generate any pending samples from the SPU before sleeping, this way we reduce the chances of underruns.
+  SPU::GeneratePendingSamples();
+
+  if (s_cheat_list)
+    s_cheat_list->Apply();
+
+  if (s_frame_step_request)
+  {
+    s_frame_step_request = false;
+    PauseSystem(true);
+  }
+
+  // Save states for rewind and runahead.
+  if (s_rewind_save_counter >= 0)
+  {
+    if (s_rewind_save_counter == 0)
+    {
+      SaveRewindState();
+      s_rewind_save_counter = s_rewind_save_frequency;
+    }
+    else
+    {
+      s_rewind_save_counter--;
+    }
+  }
+  if (s_runahead_frames > 0)
+    SaveRunaheadState();
 
   const Common::Timer::Value current_time = Common::Timer::GetCurrentValue();
   if (current_time < s_next_frame_time || s_display_all_frames || s_last_frame_skipped)
@@ -1643,20 +1676,8 @@ void System::FrameDone()
     s_last_frame_skipped = true;
   }
 
-  // Generate any pending samples from the SPU before sleeping, this way we reduce the chances of underruns.
-  SPU::GeneratePendingSamples();
-
-  if (s_cheat_list)
-    s_cheat_list->Apply();
-
-  if (s_frame_step_request)
-  {
-    s_frame_step_request = false;
-    PauseSystem(true);
-  }
-
   // TODO: this will affect input latency
-  if (s_throttler_enabled)
+  if (s_throttler_enabled && IsRunning())
     Throttle();
 
   // this can shut us down
@@ -3636,18 +3657,22 @@ void System::SetRewinding(bool enabled)
 {
   if (enabled)
   {
+    const bool was_enabled = IsRewinding();
+
     // Try to rewind at the replay speed, or one per second maximum.
     const float load_frequency = std::min(g_settings.rewind_save_frequency, 1.0f);
     s_rewind_load_frequency = static_cast<s32>(std::ceil(load_frequency * s_throttle_frequency));
     s_rewind_load_counter = 0;
+
+    if (!was_enabled)
+      CPU::ExitExecution();
   }
   else
   {
     s_rewind_load_frequency = -1;
     s_rewind_load_counter = -1;
+    s_rewinding_first_save = true;
   }
-
-  s_rewinding_first_save = true;
 }
 
 void System::DoRewind()
@@ -3666,6 +3691,15 @@ void System::DoRewind()
   }
 
   s_next_frame_time += s_frame_period;
+
+  // TODO: Purge reset/restore
+  g_gpu->ResetGraphicsAPIState();
+  Host::RenderDisplay(false);
+  g_gpu->RestoreGraphicsAPIState();
+
+  Host::OnVBlankStart();
+
+  Throttle();
 }
 
 void System::SaveRunaheadState()
@@ -3746,25 +3780,6 @@ void System::DoRunahead()
 #ifdef PROFILE_MEMORY_SAVE_STATES
   Log_DevPrintf("runahead ending at frame %u, took %.2f ms", s_frame_number, timer.GetTimeMilliseconds());
 #endif
-}
-
-void System::DoMemorySaveStates()
-{
-  if (s_rewind_save_counter >= 0)
-  {
-    if (s_rewind_save_counter == 0)
-    {
-      SaveRewindState();
-      s_rewind_save_counter = s_rewind_save_frequency;
-    }
-    else
-    {
-      s_rewind_save_counter--;
-    }
-  }
-
-  if (s_runahead_frames > 0)
-    SaveRunaheadState();
 }
 
 void System::SetRunaheadReplayFlag()
