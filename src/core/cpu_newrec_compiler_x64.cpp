@@ -286,6 +286,57 @@ void CPU::NewRec::X64Compiler::BeginBlock()
 #endif
 }
 
+void CPU::NewRec::X64Compiler::GenerateBlockProtectCheck(const u8* ram_ptr, const u8* shadow_ptr, u32 size)
+{
+  // store it first to reduce code size, because we can offset
+  cg->mov(RXARG1, static_cast<size_t>(reinterpret_cast<uintptr_t>(ram_ptr)));
+  cg->mov(RXARG2, static_cast<size_t>(reinterpret_cast<uintptr_t>(shadow_ptr)));
+
+  bool first = true;
+  u32 offset = 0;
+  while (size >= 16)
+  {
+    const Xbyak::Xmm& dst = first ? cg->xmm0 : cg->xmm1;
+    cg->movups(dst, cg->xword[RXARG1 + offset]);
+    cg->pcmpeqd(dst, cg->xword[RXARG2 + offset]);
+    if (!first)
+      cg->pand(cg->xmm0, dst);
+    else
+      first = false;
+
+    offset += 16;
+    size -= 16;
+  }
+
+  // TODO: better codegen for 16 byte aligned blocks
+  if (!first)
+  {
+    cg->movmskps(cg->eax, cg->xmm0);
+    cg->cmp(cg->eax, 0xf);
+    cg->jne(g_discard_and_recompile_block);
+  }
+
+  while (size >= 8)
+  {
+    cg->mov(RXARG3, cg->qword[RXARG1 + offset]);
+    cg->cmp(RXARG3, cg->qword[RXARG2 + offset]);
+    cg->jne(g_discard_and_recompile_block);
+    offset += 8;
+    size -= 8;
+  }
+
+  while (size >= 4)
+  {
+    cg->mov(RWARG3, cg->dword[RXARG1 + offset]);
+    cg->cmp(RWARG3, cg->dword[RXARG2 + offset]);
+    cg->jne(g_discard_and_recompile_block);
+    offset += 4;
+    size -= 4;
+  }
+
+  DebugAssert(size == 0);
+}
+
 void CPU::NewRec::X64Compiler::EndBlock(const std::optional<u32>& newpc)
 {
   if (newpc.has_value())
@@ -2121,6 +2172,13 @@ u32 CPU::NewRec::CompileASMFunctions(u8* code, u32 code_size)
   {
     cg->mov(RWARG1, cg->dword[PTR(&g_state.pc)]);
     cg->call(&CompileOrRevalidateBlock);
+    cg->jmp(dispatch);
+  }
+
+  g_discard_and_recompile_block = cg->getCurr();
+  {
+    cg->mov(RWARG1, cg->dword[PTR(&g_state.pc)]);
+    cg->call(&DiscardAndRecompileBlock);
     cg->jmp(dispatch);
   }
 

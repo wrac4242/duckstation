@@ -59,6 +59,13 @@ struct InstructionInfo
   inline bool ReadsReg(Reg reg) const { return (read_reg[0] == reg || read_reg[1] == reg || read_reg[2] == reg); }
 };
 
+enum class BlockState : u8
+{
+  Valid,
+  Invalidated,
+  NeedsRecompile,
+};
+
 struct Block
 {
   u32 pc;
@@ -71,7 +78,7 @@ struct Block
   BlockLinkMap::iterator exit_links[MAX_BLOCK_EXIT_LINKS];
   u32 num_exit_links;
 
-  bool invalidated;
+  BlockState state;
 
   // followed by Instruction * size, InstructionRegInfo * size
   const Instruction* Instructions() const { return reinterpret_cast<const Instruction*>(this + 1); }
@@ -96,7 +103,8 @@ struct LoadstoreBackpatchInfo
   u16 size : 2;
   u16 is_signed : 1;
   u16 is_load : 1;
-  u16 code_size;
+  u8 code_size;
+  u8 fault_count;
 
   MemoryAccessSize AccessSize() const { return static_cast<MemoryAccessSize>(size); }
   u32 AccessSizeInBytes() const { return 1u << size; }
@@ -108,11 +116,30 @@ static inline bool BlockInRAM(VirtualMemoryAddress pc)
   return VirtualAddressToPhysical(pc) < Bus::g_ram_size;
 }
 
+enum class PageProtectionMode : u8
+{
+  WriteProtected,
+  ManualCheck,
+  Unprotected,
+};
+struct PageProtectionInfo
+{
+  Block* first_block_in_page;
+  Block* last_block_in_page;
+
+  PageProtectionMode mode;
+  u16 invalidate_count;
+  u32 invalidate_frame;
+};
+static_assert(sizeof(PageProtectionInfo) == 24);
+
 Block* LookupBlock(u32 pc);
 Block* CreateBlock(u32 pc);
 bool RevalidateBlock(Block* block);
 void CompileOrRevalidateBlock(u32 start_pc);
+void DiscardAndRecompileBlock(u32 start_pc);
 u32 CreateBlockLink(Block* from_block, void* code, u32 newpc);
+PageProtectionMode GetProtectionModeForBlock(Block* block);
 
 u32 CompileASMFunctions(u8* code, u32 code_size);
 u32 EmitJump(void* code, const void* dst, bool flush_icache);
@@ -132,5 +159,6 @@ extern const void* g_compile_or_revalidate_block;
 extern const void* g_check_events_and_dispatch;
 extern const void* g_dispatcher;
 extern const void* g_interpret_block;
+extern const void* g_discard_and_recompile_block;
 
 } // namespace CPU::NewRec

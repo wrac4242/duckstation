@@ -198,6 +198,7 @@ protected:
 
   virtual void Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer, u32 far_code_space);
   virtual void BeginBlock();
+  virtual void GenerateBlockProtectCheck(const u8* ram_ptr, const u8* shadow_ptr, u32 size) = 0;
   virtual void EndBlock(const std::optional<u32>& newpc) = 0;
   virtual void EndBlockWithException(Exception excode) = 0;
   virtual const void* EndCompile(u32* code_size, u32* far_code_size) = 0;

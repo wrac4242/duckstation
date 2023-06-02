@@ -12,6 +12,7 @@
 #include "cpu_newrec_private.h"
 #include "cpu_types.h"
 #include "settings.h"
+#include "system.h"
 #include "util/page_fault_handler.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -20,7 +21,7 @@ Log_SetChannel(CPU::NewRec);
 
 namespace CPU::NewRec {
 using LUTRangeList = std::array<std::pair<VirtualMemoryAddress, VirtualMemoryAddress>, 9>;
-using PageBlockLookupArray = std::array<std::pair<Block*, Block*>, Bus::RAM_8MB_CODE_PAGE_COUNT>;
+using PageProtectionArray = std::array<PageProtectionInfo, Bus::RAM_8MB_CODE_PAGE_COUNT>;
 
 static CodeLUT DecodeCodeLUTPointer(u32 slot, CodeLUT ptr);
 static CodeLUT EncodeCodeLUTPointer(u32 slot, CodeLUT ptr);
@@ -30,7 +31,7 @@ static void InvalidCodeFunction();
 
 static void AllocateLUTs();
 static void ResetLUTs();
-static void InvalidateBlock(Block* block);
+static void InvalidateBlock(Block* block, BlockState new_state);
 static void ClearBlocks();
 static void CompileASMFunctions();
 
@@ -51,7 +52,7 @@ CodeLUTArray g_fast_map;
 static BlockLUTArray s_block_map;
 static std::unique_ptr<const void*[]> s_lut_code_pointers;
 static std::unique_ptr<Block*[]> s_lut_block_pointers;
-static PageBlockLookupArray s_page_block_lookup;
+static PageProtectionArray s_page_protection = {};
 static std::vector<Block*> s_blocks;
 static BlockLinkMap s_block_links;
 static bool s_lut_initialized = false;
@@ -63,8 +64,9 @@ static std::vector<Instruction> s_block_instructions;
 static std::unordered_map<const void*, LoadstoreBackpatchInfo> s_fastmem_backpatch_info;
 static std::unordered_set<u32> s_fastmem_faulting_pcs;
 
-NORETURN_FUNCTION_POINTER void(*g_enter_recompiler)();
+NORETURN_FUNCTION_POINTER void (*g_enter_recompiler)();
 const void* g_compile_or_revalidate_block;
+const void* g_discard_and_recompile_block;
 const void* g_check_events_and_dispatch;
 const void* g_dispatcher;
 } // namespace CPU::NewRec
@@ -264,7 +266,7 @@ CPU::NewRec::Block* CPU::NewRec::CreateBlock(u32 pc)
   block->host_code = nullptr;
   block->next_block_in_page = nullptr;
   block->num_exit_links = 0;
-  block->invalidated = false;
+  block->state = BlockState::Valid;
   std::memcpy(block->Instructions(), s_block_instructions.data(), sizeof(Instruction) * size);
   s_block_map[table][idx] = block;
 
@@ -278,8 +280,11 @@ CPU::NewRec::Block* CPU::NewRec::CreateBlock(u32 pc)
 
 bool CPU::NewRec::RevalidateBlock(Block* block)
 {
-  DebugAssert(block->invalidated);
+  DebugAssert(block->state != BlockState::Valid);
   DebugAssert(BlockInRAM(block->pc));
+
+  if (block->state == BlockState::NeedsRecompile)
+    return false;
 
   // blocks shouldn't be wrapping..
   const PhysicalMemoryAddress phys_addr = VirtualAddressToPhysical(block->pc);
@@ -293,7 +298,7 @@ bool CPU::NewRec::RevalidateBlock(Block* block)
     return false;
   }
 
-  block->invalidated = false;
+  block->state = BlockState::Valid;
   AddBlockToPageList(block);
   return true;
 }
@@ -306,7 +311,7 @@ void CPU::NewRec::CompileOrRevalidateBlock(u32 start_pc)
   if (block)
   {
     // we should only be here if the block got invalidated
-    DebugAssert(block->invalidated);
+    DebugAssert(block->state != BlockState::Valid);
     if (RevalidateBlock(block))
     {
       SetFastMap(start_pc, block->host_code);
@@ -335,26 +340,87 @@ void CPU::NewRec::CompileOrRevalidateBlock(u32 start_pc)
   BacklinkBlocks(start_pc, block->host_code);
 }
 
+void CPU::NewRec::DiscardAndRecompileBlock(u32 start_pc)
+{
+  Log_DevPrintf("Discard block %08X with manual protection", start_pc);
+  Block* block = LookupBlock(start_pc);
+  DebugAssert(block && block->state == BlockState::Valid);
+  InvalidateBlock(block, BlockState::NeedsRecompile);
+  CompileOrRevalidateBlock(start_pc);
+}
+
 void CPU::NewRec::AddBlockToPageList(Block* block)
 {
   if (!BlockInRAM(block->pc) || block->next_block_in_page)
     return;
 
   // TODO: what about blocks which span more than one page?
-  const u32 page_idx = Bus::GetRAMCodePageIndex(VirtualMemoryAddress(block->pc));
+  const u32 page_idx = Bus::GetRAMCodePageIndex(block->pc);
+  PageProtectionInfo& entry = s_page_protection[page_idx];
+  if (entry.mode != PageProtectionMode::WriteProtected)
+    return;
+
   Bus::SetRAMCodePage(page_idx);
 
-  auto& entry = s_page_block_lookup[page_idx];
-  if (entry.second)
+  if (entry.last_block_in_page)
   {
-    entry.second->next_block_in_page = block;
-    entry.second = block;
+    entry.last_block_in_page->next_block_in_page = block;
+    entry.last_block_in_page = block;
   }
   else
   {
-    entry.first = block;
-    entry.second = block;
+    entry.first_block_in_page = block;
+    entry.last_block_in_page = block;
   }
+}
+
+void CPU::NewRec::InvalidateBlocksWithPageNumber(u32 index)
+{
+  DebugAssert(index < Bus::RAM_8MB_CODE_PAGE_COUNT);
+  Bus::ClearRAMCodePage(index);
+
+  BlockState new_block_state = BlockState::Invalidated;
+  PageProtectionInfo& ppi = s_page_protection[index];
+
+  const u32 frame_number = System::GetFrameNumber();
+  const u32 frame_delta = frame_number - ppi.invalidate_frame;
+  ppi.invalidate_count++;
+
+  if (frame_delta >= 10)
+  {
+    ppi.invalidate_count = 1;
+    ppi.invalidate_frame = frame_number;
+  }
+  else if (ppi.invalidate_count > 3)
+  {
+    Log_DevPrintf("%u invalidations to page %u in %u frames, switching to manual protection", ppi.invalidate_count,
+                  index, frame_delta);
+    ppi.mode = PageProtectionMode::ManualCheck;
+    new_block_state = BlockState::NeedsRecompile;
+  }
+
+  Block* block = ppi.first_block_in_page;
+  while (block)
+  {
+    InvalidateBlock(block, new_block_state);
+
+    Block* next_block = block->next_block_in_page;
+    block->next_block_in_page = nullptr;
+    block = next_block;
+  }
+
+  ppi.first_block_in_page = nullptr;
+  ppi.last_block_in_page = nullptr;
+}
+
+CPU::NewRec::PageProtectionMode CPU::NewRec::GetProtectionModeForBlock(Block* block)
+{
+  if (!BlockInRAM(block->pc))
+    return PageProtectionMode::Unprotected;
+
+  const u32 page_idx = Bus::GetRAMCodePageIndex(block->pc);
+  const PageProtectionInfo& ppi = s_page_protection[page_idx];
+  return ppi.mode;
 }
 
 u32 CPU::NewRec::CreateBlockLink(Block* block, void* code, u32 newpc)
@@ -363,7 +429,8 @@ u32 CPU::NewRec::CreateBlockLink(Block* block, void* code, u32 newpc)
   if (g_settings.cpu_recompiler_block_linking)
   {
     const Block* next_block = LookupBlock(newpc);
-    dst = (next_block && !next_block->invalidated) ? next_block->host_code : g_compile_or_revalidate_block;
+    dst =
+      (next_block && next_block->state == BlockState::Valid) ? next_block->host_code : g_compile_or_revalidate_block;
 
     BlockLinkMap::iterator iter = s_block_links.emplace(newpc, code);
     DebugAssert(block->num_exit_links < MAX_BLOCK_EXIT_LINKS);
@@ -441,14 +508,15 @@ void CPU::NewRec::Shutdown()
   g_enter_recompiler();
 }
 
-void CPU::NewRec::InvalidateBlock(Block* block)
+void CPU::NewRec::InvalidateBlock(Block* block, BlockState new_state)
 {
-  if (block->invalidated)
-    return;
+  if (block->state == BlockState::Valid)
+  {
+    SetFastMap(block->pc, g_compile_or_revalidate_block);
+    BacklinkBlocks(block->pc, g_compile_or_revalidate_block);
+  }
 
-  SetFastMap(block->pc, g_compile_or_revalidate_block);
-  BacklinkBlocks(block->pc, g_compile_or_revalidate_block);
-  block->invalidated = true;
+  block->state = new_state;
 }
 
 void CPU::NewRec::InvalidateAllRAMBlocks()
@@ -458,37 +526,19 @@ void CPU::NewRec::InvalidateAllRAMBlocks()
   for (Block* block : s_blocks)
   {
     if (BlockInRAM(block->pc))
-      InvalidateBlock(block);
+      InvalidateBlock(block, BlockState::Invalidated);
   }
-}
-
-void CPU::NewRec::InvalidateBlocksWithPageNumber(u32 index)
-{
-  DebugAssert(index < Bus::RAM_8MB_CODE_PAGE_COUNT);
-
-  Block* block = s_page_block_lookup[index].first;
-  while (block)
-  {
-    InvalidateBlock(block);
-
-    Block* next_block = block->next_block_in_page;
-    block->next_block_in_page = nullptr;
-    block = next_block;
-  }
-
-  s_page_block_lookup[index] = {};
-  Bus::ClearRAMCodePage(index);
 }
 
 void CPU::NewRec::ClearBlocks()
 {
   for (u32 i = 0; i < Bus::RAM_8MB_CODE_PAGE_COUNT; i++)
   {
-    if (!s_page_block_lookup[i].first)
-      continue;
+    PageProtectionInfo& ppi = s_page_protection[i];
+    if (ppi.mode == PageProtectionMode::WriteProtected && ppi.first_block_in_page)
+      Bus::ClearRAMCodePage(i);
 
-    s_page_block_lookup[i] = {};
-    Bus::ClearRAMCodePage(i);
+    ppi = {};
   }
 
   s_fastmem_backpatch_info.clear();
@@ -547,9 +597,9 @@ void CPU::NewRec::AddLoadStoreInfo(void* code_address, u32 code_size, u32 guest_
   if (iter != s_fastmem_backpatch_info.end())
     s_fastmem_backpatch_info.erase(iter);
 
-  const LoadstoreBackpatchInfo info{guest_pc,         gpr_bitmask,   static_cast<u16>(cycles),
-                                    address_register, data_register, static_cast<u16>(size),
-                                    is_signed,        is_load,       static_cast<u8>(code_size)};
+  const LoadstoreBackpatchInfo info{
+    guest_pc,  gpr_bitmask, static_cast<u16>(cycles),   address_register,  data_register, static_cast<u16>(size),
+    is_signed, is_load,     static_cast<u8>(code_size), static_cast<u8>(0)};
   s_fastmem_backpatch_info.emplace(code_address, info);
 }
 
@@ -575,7 +625,16 @@ Common::PageFaultHandler::HandlerResult CPU::NewRec::PageFaultHandler(void* exce
     return Common::PageFaultHandler::HandlerResult::ExecuteNextHandler;
   }
 
-  const LoadstoreBackpatchInfo& info = iter->second;
+  // if we're writing to ram, let it go through a few times, and use manual block protection to sort it out
+  LoadstoreBackpatchInfo& info = iter->second;
+  if (is_write && !g_state.cop0_regs.sr.Isc && Bus::IsRAMAddress(guest_address) && info.fault_count < 10)
+  {
+    Log_DevPrintf("Ignoring fault due to RAM write");
+    InvalidateBlocksWithPageNumber(Bus::GetRAMCodePageIndex(guest_address));
+    info.fault_count++;
+    return Common::PageFaultHandler::HandlerResult::ContinueExecution;
+  }
+
   Log_DevPrintf("Backpatching %s at %p[%u] (pc %08X addr %08X): Bitmask %08X Addr %u Data %u Size %u Signed %02X",
                 info.is_load ? "load" : "store", exception_pc, info.code_size, info.guest_pc, guest_address,
                 info.gpr_bitmask, info.address_register, info.data_register, info.AccessSizeInBytes(), info.is_signed);

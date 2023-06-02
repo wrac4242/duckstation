@@ -36,6 +36,7 @@ protected:
 
   void Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer, u32 far_code_space) override;
   void BeginBlock() override;
+  void GenerateBlockProtectCheck(const u8* ram_ptr, const u8* shadow_ptr, u32 size) override;
   void EndBlock(const std::optional<u32>& newpc) override;
   void EndBlockWithException(Exception excode) override;
   void EndAndLinkBlock(const std::optional<u32>& newpc);

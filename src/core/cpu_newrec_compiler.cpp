@@ -54,6 +54,15 @@ void CPU::NewRec::Compiler::Reset(Block* block, u8* code_buffer, u32 code_buffer
 
 void CPU::NewRec::Compiler::BeginBlock()
 {
+  const PageProtectionMode protect_mode = GetProtectionModeForBlock(m_block);
+  if (protect_mode == PageProtectionMode::ManualCheck)
+  {
+    Log_DebugPrintf("Generate manual protection for PC %08X", m_block->pc);
+    const u8* ram_ptr = Bus::g_ram + VirtualAddressToPhysical(m_block->pc);
+    const u8* shadow_ptr = reinterpret_cast<const u8*>(m_block->Instructions());
+    GenerateBlockProtectCheck(ram_ptr, shadow_ptr, m_block->size * sizeof(Instruction));
+  }
+
   inst = m_block->Instructions();
   iinfo = m_block->InstructionsInfo();
   m_current_instruction_pc = m_block->pc;
