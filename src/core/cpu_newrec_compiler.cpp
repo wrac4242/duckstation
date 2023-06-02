@@ -1894,7 +1894,7 @@ void CPU::NewRec::Compiler::Compile_add_const(CompileFlags cf)
   // TODO: Overflow
   DebugAssert(HasConstantReg(cf.MipsS()) && HasConstantReg(cf.MipsT()));
   if (MipsD() != Reg::zero)
-    SetConstantReg(MipsD(), GetConstantRegU32(cf.MipsS()) | GetConstantRegU32(cf.MipsT()));
+    SetConstantReg(MipsD(), GetConstantRegU32(cf.MipsS()) + GetConstantRegU32(cf.MipsT()));
 }
 
 void CPU::NewRec::Compiler::Compile_addu_const(CompileFlags cf)

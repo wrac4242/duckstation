@@ -195,7 +195,6 @@ static u32 GetHostInstructionCount(const void* start, u32 size)
 
 using namespace Xbyak;
 
-// TODO: register renaming, obviously
 // TODO: try using a pointer to state instead of rip-relative.. it might end up faster due to smaller code
 
 namespace CPU::CodeCache {
