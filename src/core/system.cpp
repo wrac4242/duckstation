@@ -114,7 +114,7 @@ static bool SaveRewindState();
 static void DoRewind();
 
 static void SaveRunaheadState();
-static void DoRunahead();
+static bool DoRunahead();
 
 static bool Initialize(bool force_software_renderer);
 static bool FastForwardToFirstFrame();
@@ -212,6 +212,7 @@ static bool s_rewinding_first_save = false;
 static std::deque<MemorySaveState> s_runahead_states;
 static bool s_runahead_replay_pending = false;
 static u32 s_runahead_frames = 0;
+static u32 s_runahead_replay_frames = 0;
 
 static TinyString GetTimestampStringForFileName()
 {
@@ -1649,8 +1650,25 @@ void System::FrameDone()
       s_rewind_save_counter--;
     }
   }
-  if (s_runahead_frames > 0)
+  else if (s_runahead_frames > 0)
+  {
+    // for runahead, poll input early, that way we can use the remainder of this frame to replay.
+    // *technically* this means higher input latency, but runahead itself counter-acts that.
+    Host::OnVBlankStart();
+    if (!IsRunning())
+    {
+      CPU::ExitExecution();
+      return;
+    }
+
+    if (DoRunahead())
+    {
+      // running ahead, get it done as soon as possible
+      return;
+    }
+
     SaveRunaheadState();
+  }
 
   const Common::Timer::Value current_time = Common::Timer::GetCurrentValue();
   if (current_time < s_next_frame_time || s_display_all_frames || s_last_frame_skipped)
@@ -1676,17 +1694,19 @@ void System::FrameDone()
     s_last_frame_skipped = true;
   }
 
-  // TODO: this will affect input latency
   if (s_throttler_enabled && IsRunning())
     Throttle();
 
-  // this can shut us down
-  Host::OnVBlankStart();
-
-  if (!IsRunning())
+  // Input poll already done above
+  if (s_runahead_frames == 0)
   {
-    CPU::ExitExecution();
-    return;
+    Host::OnVBlankStart();
+
+    if (!IsRunning())
+    {
+      CPU::ExitExecution();
+      return;
+    }
   }
 
   // Update perf counters *after* throttling, we want to measure from start-of-frame
@@ -1697,6 +1717,9 @@ void System::FrameDone()
 
 void System::SetThrottleFrequency(float frequency)
 {
+  if (s_throttle_frequency == frequency)
+    return;
+
   s_throttle_frequency = frequency;
   UpdateThrottlePeriod();
 }
@@ -3721,65 +3744,70 @@ void System::SaveRunaheadState()
   s_runahead_states.push_back(std::move(mss));
 }
 
-void System::DoRunahead()
+bool System::DoRunahead()
 {
 #ifdef PROFILE_MEMORY_SAVE_STATES
-  Common::Timer timer;
-  Log_DevPrintf("runahead starting at frame %u", s_frame_number);
+  static Common::Timer replay_timer;
 #endif
 
   if (s_runahead_replay_pending)
   {
+#ifdef PROFILE_MEMORY_SAVE_STATES
+    Log_DevPrintf("runahead starting at frame %u", s_frame_number);
+    replay_timer.Reset();
+#endif
+
     // we need to replay and catch up - load the state,
     s_runahead_replay_pending = false;
     if (s_runahead_states.empty() || !LoadMemoryState(s_runahead_states.front()))
     {
       s_runahead_states.clear();
-      return;
+      return false;
     }
+
+    // figure out how many frames we need to run to catch up
+    s_runahead_replay_frames = static_cast<u32>(s_runahead_states.size());
 
     // and throw away all the states, forcing us to catch up below
-    // TODO: can we leave one frame here and run, avoiding the extra save?
     s_runahead_states.clear();
 
-#ifdef PROFILE_MEMORY_SAVE_STATES
-    Log_VerbosePrintf("Rewound to frame %u, took %.2f ms", s_frame_number, timer.GetTimeMilliseconds());
-#endif
-  }
-
-  // run the frames with no audio
-  s32 frames_to_run = static_cast<s32>(s_runahead_frames) - static_cast<s32>(s_runahead_states.size());
-  if (frames_to_run > 0)
-  {
-    Common::Timer timer2;
-#ifdef PROFILE_MEMORY_SAVE_STATES
-    const s32 temp = frames_to_run;
-#endif
-
+    // run the frames with no audio
     SPU::SetAudioOutputMuted(true);
 
-    while (frames_to_run > 0)
-    {
-      // DoRunFrame();
-      SaveRunaheadState();
-      frames_to_run--;
-    }
-
-    SPU::SetAudioOutputMuted(false);
-
 #ifdef PROFILE_MEMORY_SAVE_STATES
-    Log_VerbosePrintf("Running %d frames to catch up took %.2f ms", temp, timer2.GetTimeMilliseconds());
+    Log_VerbosePrintf("Rewound to frame %u, took %.2f ms", s_frame_number, replay_timer.GetTimeMilliseconds());
 #endif
+
+    // we don't want to save the frame we just loaded. but we are "one frame ahead", because the frame we just tossed
+    // was never saved, so return but don't decrement the counter
+    return true;
   }
-  else
+  else if (s_runahead_replay_frames == 0)
   {
-    // save this frame
+    return false;
+  }
+
+  s_runahead_replay_frames--;
+  if (s_runahead_replay_frames > 0)
+  {
+    // keep running ahead
     SaveRunaheadState();
+    return true;
   }
 
 #ifdef PROFILE_MEMORY_SAVE_STATES
-  Log_DevPrintf("runahead ending at frame %u, took %.2f ms", s_frame_number, timer.GetTimeMilliseconds());
+  Log_VerbosePrintf("Running %d frames to catch up took %.2f ms", s_runahead_frames,
+                    replay_timer.GetTimeMilliseconds());
 #endif
+
+  // we're all caught up. this frame gets saved in DoMemoryStates().
+  SPU::SetAudioOutputMuted(false);
+
+#ifdef PROFILE_MEMORY_SAVE_STATES
+  Log_DevPrintf("runahead ending at frame %u, took %.2f ms", s_frame_number, replay_timer.GetTimeMilliseconds());
+#endif
+
+  return false;
 }
 
 void System::SetRunaheadReplayFlag()
