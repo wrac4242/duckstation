@@ -249,7 +249,7 @@ void Host::OnGameChanged(const std::string& disc_path, const std::string& game_s
   }
 }
 
-void Host::OnVBlankStart()
+void Host::PumpMessagesOnCPUThread()
 {
   s_frames_to_run--;
   if (s_frames_to_run == 0)

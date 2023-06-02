@@ -645,7 +645,7 @@ void NoGUIHost::CPUThreadMainLoop()
       continue;
     }
 
-    Host::OnVBlankStart();
+    Host::PumpMessagesOnCPUThread();
     Host::RenderDisplay(false);
     if (!g_host_display->IsVsyncEnabled())
       g_host_display->ThrottlePresentation();
@@ -856,7 +856,7 @@ void Host::SetMouseMode(bool relative, bool hide_cursor)
   // emit g_emu_thread->mouseModeRequested(relative, hide_cursor);
 }
 
-void Host::OnVBlankStart()
+void Host::PumpMessagesOnCPUThread()
 {
   NoGUIHost::ProcessCPUThreadPlatformMessages();
   NoGUIHost::ProcessCPUThreadEvents(false);

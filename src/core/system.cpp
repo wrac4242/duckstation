@@ -1654,7 +1654,7 @@ void System::FrameDone()
   {
     // for runahead, poll input early, that way we can use the remainder of this frame to replay.
     // *technically* this means higher input latency, but runahead itself counter-acts that.
-    Host::OnVBlankStart();
+    Host::PumpMessagesOnCPUThread();
     if (!IsRunning())
     {
       CPU::ExitExecution();
@@ -1700,7 +1700,7 @@ void System::FrameDone()
   // Input poll already done above
   if (s_runahead_frames == 0)
   {
-    Host::OnVBlankStart();
+    Host::PumpMessagesOnCPUThread();
 
     if (!IsRunning())
     {
@@ -3720,7 +3720,7 @@ void System::DoRewind()
   Host::RenderDisplay(false);
   g_gpu->RestoreGraphicsAPIState();
 
-  Host::OnVBlankStart();
+  Host::PumpMessagesOnCPUThread();
 
   Throttle();
 }
