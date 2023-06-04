@@ -1271,7 +1271,7 @@ restart_instruction:
       WriteRegDelayed(inst.i.rt, sxvalue);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LBx(inst.bits, sxvalue, addr);
+        PGXP::CPU_LBx(inst.bits, addr, sxvalue);
     }
     break;
 
@@ -1289,7 +1289,7 @@ restart_instruction:
       WriteRegDelayed(inst.i.rt, sxvalue);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LHx(inst.bits, sxvalue, addr);
+        PGXP::CPU_LHx(inst.bits, addr, sxvalue);
     }
     break;
 
@@ -1306,7 +1306,7 @@ restart_instruction:
       WriteRegDelayed(inst.i.rt, value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LW(inst.bits, value, addr);
+        PGXP::CPU_LW(inst.bits, addr, value);
     }
     break;
 
@@ -1324,7 +1324,7 @@ restart_instruction:
       WriteRegDelayed(inst.i.rt, zxvalue);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LBx(inst.bits, zxvalue, addr);
+        PGXP::CPU_LBx(inst.bits, addr, zxvalue);
     }
     break;
 
@@ -1376,7 +1376,7 @@ restart_instruction:
       WriteRegDelayed(inst.i.rt, new_value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LW(inst.bits, new_value, addr);
+        PGXP::CPU_LW(inst.bits, addr, new_value);
     }
     break;
 
@@ -1390,7 +1390,7 @@ restart_instruction:
       WriteMemoryByte(addr, value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_SB(inst.bits, Truncate8(value), addr);
+        PGXP::CPU_SB(inst.bits, addr, value);
     }
     break;
 
@@ -1404,7 +1404,7 @@ restart_instruction:
       WriteMemoryHalfWord(addr, value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_SH(inst.bits, Truncate16(value), addr);
+        PGXP::CPU_SH(inst.bits, addr, value);
     }
     break;
 
@@ -1418,7 +1418,7 @@ restart_instruction:
       WriteMemoryWord(addr, value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_SW(inst.bits, value, addr);
+        PGXP::CPU_SW(inst.bits, addr, value);
     }
     break;
 
@@ -1451,7 +1451,7 @@ restart_instruction:
       WriteMemoryWord(aligned_addr, new_value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_SW(inst.bits, new_value, addr);
+        PGXP::CPU_SW(inst.bits, aligned_addr, new_value);
     }
     break;
 
@@ -1614,7 +1614,7 @@ restart_instruction:
             WriteRegDelayed(inst.r.rt, value);
 
             if constexpr (pgxp_mode >= PGXPMode::Memory)
-              PGXP::CPU_CFC2(inst.bits, value, value);
+              PGXP::CPU_MFC2(inst.bits, value);
           }
           break;
 
@@ -1624,7 +1624,7 @@ restart_instruction:
             GTE::WriteRegister(static_cast<u32>(inst.r.rd.GetValue()) + 32, value);
 
             if constexpr (pgxp_mode >= PGXPMode::Memory)
-              PGXP::CPU_CTC2(inst.bits, value, value);
+              PGXP::CPU_MTC2(inst.bits, value);
           }
           break;
 
@@ -1634,7 +1634,7 @@ restart_instruction:
             WriteRegDelayed(inst.r.rt, value);
 
             if constexpr (pgxp_mode >= PGXPMode::Memory)
-              PGXP::CPU_MFC2(inst.bits, value, value);
+              PGXP::CPU_MFC2(inst.bits, value);
           }
           break;
 
@@ -1644,7 +1644,7 @@ restart_instruction:
             GTE::WriteRegister(static_cast<u32>(inst.r.rd.GetValue()), value);
 
             if constexpr (pgxp_mode >= PGXPMode::Memory)
-              PGXP::CPU_MTC2(inst.bits, value, value);
+              PGXP::CPU_MTC2(inst.bits, value);
           }
           break;
 
@@ -1678,7 +1678,7 @@ restart_instruction:
       GTE::WriteRegister(ZeroExtend32(static_cast<u8>(inst.i.rt.GetValue())), value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_LWC2(inst.bits, value, addr);
+        PGXP::CPU_LWC2(inst.bits, addr, value);
     }
     break;
 
@@ -1698,7 +1698,7 @@ restart_instruction:
       WriteMemoryWord(addr, value);
 
       if constexpr (pgxp_mode >= PGXPMode::Memory)
-        PGXP::CPU_SWC2(inst.bits, value, addr);
+        PGXP::CPU_SWC2(inst.bits, addr, value);
     }
     break;
 

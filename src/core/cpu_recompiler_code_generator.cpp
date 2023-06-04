@@ -1111,7 +1111,7 @@ void CodeGenerator::AddPendingCycles(bool commit)
 
   if (commit)
   {
-    //m_gte_done_cycle = std::max<TickCount>(m_gte_done_cycle - m_delayed_cycles_add, 0);
+    // m_gte_done_cycle = std::max<TickCount>(m_gte_done_cycle - m_delayed_cycles_add, 0);
     m_gte_done_cycle = 0;
     m_gte_busy_cycles_dirty = true;
     m_delayed_cycles_add = 0;
@@ -1454,7 +1454,7 @@ bool CodeGenerator::Compile_Load(const CodeBlockInstruction& cbi)
       result = EmitLoadGuestMemory(cbi, address, address_spec, RegSize_8);
       ConvertValueSizeInPlace(&result, RegSize_32, (cbi.instruction.op == InstructionOp::lb));
       if (g_settings.gpu_pgxp_enable)
-        EmitFunctionCall(nullptr, PGXP::CPU_LBx, Value::FromConstantU32(cbi.instruction.bits), result, address);
+        EmitFunctionCall(nullptr, PGXP::CPU_LBx, Value::FromConstantU32(cbi.instruction.bits), address, result);
 
       if (address_spec)
       {
@@ -1472,7 +1472,7 @@ bool CodeGenerator::Compile_Load(const CodeBlockInstruction& cbi)
       ConvertValueSizeInPlace(&result, RegSize_32, (cbi.instruction.op == InstructionOp::lh));
 
       if (g_settings.gpu_pgxp_enable)
-        EmitFunctionCall(nullptr, PGXP::CPU_LHx, Value::FromConstantU32(cbi.instruction.bits), result, address);
+        EmitFunctionCall(nullptr, PGXP::CPU_LHx, Value::FromConstantU32(cbi.instruction.bits), address, result);
 
       if (address_spec)
       {
@@ -1487,7 +1487,7 @@ bool CodeGenerator::Compile_Load(const CodeBlockInstruction& cbi)
     {
       result = EmitLoadGuestMemory(cbi, address, address_spec, RegSize_32);
       if (g_settings.gpu_pgxp_enable)
-        EmitFunctionCall(nullptr, PGXP::CPU_LW, Value::FromConstantU32(cbi.instruction.bits), result, address);
+        EmitFunctionCall(nullptr, PGXP::CPU_LW, Value::FromConstantU32(cbi.instruction.bits), address, result);
 
       if (address_spec)
         value_spec = SpeculativeReadMemory(*address_spec);
@@ -1526,10 +1526,7 @@ bool CodeGenerator::Compile_Store(const CodeBlockInstruction& cbi)
     case InstructionOp::sb:
     {
       if (g_settings.gpu_pgxp_enable)
-      {
-        EmitFunctionCall(nullptr, PGXP::CPU_SB, Value::FromConstantU32(cbi.instruction.bits),
-                         value.ViewAsSize(RegSize_8), address);
-      }
+        EmitFunctionCall(nullptr, PGXP::CPU_SB, Value::FromConstantU32(cbi.instruction.bits), address, value);
 
       EmitStoreGuestMemory(cbi, address, address_spec, RegSize_8, value);
 
@@ -1557,10 +1554,7 @@ bool CodeGenerator::Compile_Store(const CodeBlockInstruction& cbi)
     case InstructionOp::sh:
     {
       if (g_settings.gpu_pgxp_enable)
-      {
-        EmitFunctionCall(nullptr, PGXP::CPU_SH, Value::FromConstantU32(cbi.instruction.bits),
-                         value.ViewAsSize(RegSize_16), address);
-      }
+        EmitFunctionCall(nullptr, PGXP::CPU_SH, Value::FromConstantU32(cbi.instruction.bits), address, value);
 
       EmitStoreGuestMemory(cbi, address, address_spec, RegSize_16, value);
 
@@ -1588,7 +1582,7 @@ bool CodeGenerator::Compile_Store(const CodeBlockInstruction& cbi)
     case InstructionOp::sw:
     {
       if (g_settings.gpu_pgxp_enable)
-        EmitFunctionCall(nullptr, PGXP::CPU_SW, Value::FromConstantU32(cbi.instruction.bits), value, address);
+        EmitFunctionCall(nullptr, PGXP::CPU_SW, Value::FromConstantU32(cbi.instruction.bits), address, value);
 
       EmitStoreGuestMemory(cbi, address, address_spec, RegSize_32, value);
 
@@ -1692,7 +1686,7 @@ bool CodeGenerator::Compile_LoadLeftRight(const CodeBlockInstruction& cbi)
   shift.ReleaseAndClear();
 
   if (g_settings.gpu_pgxp_enable)
-    EmitFunctionCall(nullptr, PGXP::CPU_LW, Value::FromConstantU32(cbi.instruction.bits), mem, address);
+    EmitFunctionCall(nullptr, PGXP::CPU_LW, Value::FromConstantU32(cbi.instruction.bits), address, mem);
 
   m_register_cache.WriteGuestRegisterDelayed(cbi.instruction.i.rt, std::move(mem));
 
@@ -1755,7 +1749,7 @@ bool CodeGenerator::Compile_StoreLeftRight(const CodeBlockInstruction& cbi)
 
   EmitStoreGuestMemory(cbi, address, address_spec, RegSize_32, mem);
   if (g_settings.gpu_pgxp_enable)
-    EmitFunctionCall(nullptr, PGXP::CPU_SW, Value::FromConstantU32(cbi.instruction.bits), mem, address);
+    EmitFunctionCall(nullptr, PGXP::CPU_SW, Value::FromConstantU32(cbi.instruction.bits), address, mem);
 
   InstructionEpilogue(cbi);
   return true;
@@ -2954,7 +2948,7 @@ bool CodeGenerator::Compile_cop2(const CodeBlockInstruction& cbi)
       DoGTERegisterWrite(reg, value);
 
       if (g_settings.gpu_pgxp_enable)
-        EmitFunctionCall(nullptr, PGXP::CPU_LWC2, Value::FromConstantU32(cbi.instruction.bits), value, address);
+        EmitFunctionCall(nullptr, PGXP::CPU_LWC2, Value::FromConstantU32(cbi.instruction.bits), address, value);
     }
     else
     {
@@ -2962,7 +2956,7 @@ bool CodeGenerator::Compile_cop2(const CodeBlockInstruction& cbi)
       EmitStoreGuestMemory(cbi, address, spec_address, RegSize_32, value);
 
       if (g_settings.gpu_pgxp_enable)
-        EmitFunctionCall(nullptr, PGXP::CPU_SWC2, Value::FromConstantU32(cbi.instruction.bits), value, address);
+        EmitFunctionCall(nullptr, PGXP::CPU_SWC2, Value::FromConstantU32(cbi.instruction.bits), address, value);
 
       SpeculativeValue spec_base = SpeculativeReadReg(cbi.instruction.i.rs);
       if (spec_base)
@@ -2992,11 +2986,7 @@ bool CodeGenerator::Compile_cop2(const CodeBlockInstruction& cbi)
 
         // PGXP done first here before ownership is transferred.
         if (g_settings.gpu_pgxp_enable)
-        {
-          EmitFunctionCall(
-            nullptr, (cbi.instruction.cop.CommonOp() == CopCommonInstruction::cfcn) ? PGXP::CPU_CFC2 : PGXP::CPU_MFC2,
-            Value::FromConstantU32(cbi.instruction.bits), value, value);
-        }
+          EmitFunctionCall(nullptr, PGXP::CPU_MFC2, Value::FromConstantU32(cbi.instruction.bits), value);
 
         m_register_cache.WriteGuestRegisterDelayed(cbi.instruction.r.rt, std::move(value));
         SpeculativeWriteReg(cbi.instruction.r.rt, std::nullopt);
@@ -3018,11 +3008,7 @@ bool CodeGenerator::Compile_cop2(const CodeBlockInstruction& cbi)
         DoGTERegisterWrite(reg, value);
 
         if (g_settings.gpu_pgxp_enable)
-        {
-          EmitFunctionCall(
-            nullptr, (cbi.instruction.cop.CommonOp() == CopCommonInstruction::ctcn) ? PGXP::CPU_CTC2 : PGXP::CPU_MTC2,
-            Value::FromConstantU32(cbi.instruction.bits), value, value);
-        }
+          EmitFunctionCall(nullptr, PGXP::CPU_MTC2, Value::FromConstantU32(cbi.instruction.bits), value);
 
         InstructionEpilogue(cbi);
         return true;
