@@ -1162,13 +1162,13 @@ void CPU::NewRec::Compiler::CompileInstruction()
         case InstructionFunct::multu: CompileTemplate(&Compiler::Compile_multu_const, &Compiler::Compile_multu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
         case InstructionFunct::div: CompileTemplate(&Compiler::Compile_div_const, &Compiler::Compile_div, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
         case InstructionFunct::divu: CompileTemplate(&Compiler::Compile_divu_const, &Compiler::Compile_divu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
-        case InstructionFunct::add: CompileTemplate(&Compiler::Compile_add_const, &Compiler::Compile_add, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_OVERFLOW); break;
-        case InstructionFunct::addu: CompileTemplate(&Compiler::Compile_addu_const, &Compiler::Compile_addu, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
-        case InstructionFunct::sub: CompileTemplate(&Compiler::Compile_sub_const, &Compiler::Compile_sub, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_CAN_OVERFLOW); break;
-        case InstructionFunct::subu: CompileTemplate(&Compiler::Compile_subu_const, &Compiler::Compile_subu, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
+        case InstructionFunct::add: CompileTemplate(&Compiler::Compile_add_const, &Compiler::Compile_add, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_OVERFLOW | TF_RENAME_WITH_ZERO_T); break;
+        case InstructionFunct::addu: CompileTemplate(&Compiler::Compile_addu_const, &Compiler::Compile_addu, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_T); break;
+        case InstructionFunct::sub: CompileTemplate(&Compiler::Compile_sub_const, &Compiler::Compile_sub, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_CAN_OVERFLOW | TF_RENAME_WITH_ZERO_T); break;
+        case InstructionFunct::subu: CompileTemplate(&Compiler::Compile_subu_const, &Compiler::Compile_subu, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_RENAME_WITH_ZERO_T); break;
         case InstructionFunct::and_: CompileTemplate(&Compiler::Compile_and_const, &Compiler::Compile_and, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
-        case InstructionFunct::or_: CompileTemplate(&Compiler::Compile_or_const, &Compiler::Compile_or, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
-        case InstructionFunct::xor_: CompileTemplate(&Compiler::Compile_xor_const, &Compiler::Compile_xor, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
+        case InstructionFunct::or_: CompileTemplate(&Compiler::Compile_or_const, &Compiler::Compile_or, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_T); break;
+        case InstructionFunct::xor_: CompileTemplate(&Compiler::Compile_xor_const, &Compiler::Compile_xor, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_T); break;
         case InstructionFunct::nor: CompileTemplate(&Compiler::Compile_nor_const, &Compiler::Compile_nor, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
         case InstructionFunct::slt: CompileTemplate(&Compiler::Compile_slt_const, &Compiler::Compile_slt, TF_WRITES_D | TF_READS_T | TF_READS_S); break;
         case InstructionFunct::sltu: CompileTemplate(&Compiler::Compile_sltu_const, &Compiler::Compile_sltu, TF_WRITES_D | TF_READS_T | TF_READS_S); break;
@@ -1187,13 +1187,13 @@ void CPU::NewRec::Compiler::CompileInstruction()
     case InstructionOp::beq: CompileTemplate(&Compiler::Compile_beq_const, &Compiler::Compile_beq, TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_SWAP_DELAY_SLOT); break;
     case InstructionOp::bne: CompileTemplate(&Compiler::Compile_bne_const, &Compiler::Compile_bne, TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_SWAP_DELAY_SLOT); break;
 
-    case InstructionOp::addi: CompileTemplate(&Compiler::Compile_addi_const, &Compiler::Compile_addi, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_CAN_OVERFLOW); break;
-    case InstructionOp::addiu: CompileTemplate(&Compiler::Compile_addiu_const, &Compiler::Compile_addiu, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE); break;
+    case InstructionOp::addi: CompileTemplate(&Compiler::Compile_addi_const, &Compiler::Compile_addi, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_CAN_OVERFLOW | TF_RENAME_WITH_ZERO_IMM); break;
+    case InstructionOp::addiu: CompileTemplate(&Compiler::Compile_addiu_const, &Compiler::Compile_addiu, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_IMM); break;
     case InstructionOp::slti: CompileTemplate(&Compiler::Compile_slti_const, &Compiler::Compile_slti, TF_WRITES_T | TF_READS_S); break;
     case InstructionOp::sltiu: CompileTemplate(&Compiler::Compile_sltiu_const, &Compiler::Compile_sltiu, TF_WRITES_T | TF_READS_S); break;
     case InstructionOp::andi: CompileTemplate(&Compiler::Compile_andi_const, &Compiler::Compile_andi, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE); break;
-    case InstructionOp::ori: CompileTemplate(&Compiler::Compile_ori_const, &Compiler::Compile_ori, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE); break;
-    case InstructionOp::xori: CompileTemplate(&Compiler::Compile_xori_const, &Compiler::Compile_xori, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE); break;
+    case InstructionOp::ori: CompileTemplate(&Compiler::Compile_ori_const, &Compiler::Compile_ori, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_IMM); break;
+    case InstructionOp::xori: CompileTemplate(&Compiler::Compile_xori_const, &Compiler::Compile_xori, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_IMM); break;
     case InstructionOp::lui: Compile_lui(); break;
 
     case InstructionOp::lb: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::Byte, false, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
@@ -1315,6 +1315,26 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
       ((tflags & TF_WRITES_T && rt == Reg::zero) || (tflags & TF_WRITES_D && rd == Reg::zero)))
   {
     Log_DebugPrintf("Skipping instruction because it writes to zero");
+    return;
+  }
+
+  // handle rename operations
+  if ((tflags & TF_RENAME_WITH_ZERO_T && HasConstantRegValue(rt, 0)))
+  {
+    DebugAssert((tflags & (TF_WRITES_D | TF_READS_S | TF_READS_T)) == (TF_WRITES_D | TF_READS_S | TF_READS_T));
+    CompileMoveRegTemplate(rd, rs);
+    return;
+  }
+  else if ((tflags & (TF_RENAME_WITH_ZERO_T | TF_COMMUTATIVE)) == (TF_RENAME_WITH_ZERO_T | TF_COMMUTATIVE) &&
+           HasConstantRegValue(rs, 0))
+  {
+    DebugAssert((tflags & (TF_WRITES_D | TF_READS_S | TF_READS_T)) == (TF_WRITES_D | TF_READS_S | TF_READS_T));
+    CompileMoveRegTemplate(rd, rt);
+    return;
+  }
+  else if (tflags & TF_RENAME_WITH_ZERO_IMM && inst->i.imm == 0)
+  {
+    CompileMoveRegTemplate(rt, rs);
     return;
   }
 
@@ -1574,8 +1594,11 @@ void CPU::NewRec::Compiler::CompileMoveRegTemplate(Reg dst, Reg src)
 
   // TODO: rename if src is no longer used
   const u32 srcreg = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, src);
-  const u32 dstreg = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, dst);
-  CopyHostReg(dstreg, srcreg);
+  if (!TryRenameMIPSReg(dst, src, srcreg, Reg::count))
+  {
+    const u32 dstreg = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, dst);
+    CopyHostReg(dstreg, srcreg);
+  }
 }
 
 void CPU::NewRec::Compiler::Compile_j()

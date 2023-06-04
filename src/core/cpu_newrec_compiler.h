@@ -126,6 +126,9 @@ protected:
     TF_NEEDS_REG_S = (1 << 14),
     TF_NEEDS_REG_T = (1 << 15),
     TF_CAN_SWAP_DELAY_SLOT = (1 << 16),
+
+    TF_RENAME_WITH_ZERO_T = (1 << 17), // add commutative for S as well
+    TF_RENAME_WITH_ZERO_IMM = (1 << 18),
   };
 
   enum HostRegFlags : u8
