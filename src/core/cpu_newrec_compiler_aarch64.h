@@ -30,6 +30,7 @@ protected:
 
   void Reset(Block* block, u8* code_buffer, u32 code_buffer_space, u8* far_code_buffer, u32 far_code_space) override;
   void BeginBlock() override;
+  void GenerateBlockProtectCheck(const u8* ram_ptr, const u8* shadow_ptr, u32 size) override;
   void EndBlock(const std::optional<u32>& newpc) override;
   void EndBlockWithException(Exception excode) override;
   void EndAndLinkBlock(const std::optional<u32>& newpc);
@@ -96,8 +97,8 @@ protected:
   ComputeLoadStoreAddressArg(CompileFlags cf, const std::optional<VirtualMemoryAddress>& address,
                              const std::optional<const vixl::aarch64::WRegister>& reg = std::nullopt);
   template<typename RegAllocFn>
-  void GenerateLoad(const vixl::aarch64::WRegister& addr_reg, MemoryAccessSize size, bool sign,
-                    const RegAllocFn& dst_reg_alloc);
+  vixl::aarch64::WRegister GenerateLoad(const vixl::aarch64::WRegister& addr_reg, MemoryAccessSize size, bool sign,
+                                        const RegAllocFn& dst_reg_alloc);
   void GenerateStore(const vixl::aarch64::WRegister& addr_reg, const vixl::aarch64::WRegister& value_reg,
                      MemoryAccessSize size);
   void Compile_lxx(CompileFlags cf, MemoryAccessSize size, bool sign,
@@ -120,6 +121,9 @@ protected:
   void Compile_mfc2(CompileFlags cf) override;
   void Compile_mtc2(CompileFlags cf) override;
   void Compile_cop2(CompileFlags cf) override;
+
+  void GeneratePGXPCallWithMIPSRegs(const void* func, u32 arg1val, Reg arg2reg = Reg::count,
+                                    Reg arg3reg = Reg::count) override;
 
 private:
   void EmitMov(const vixl::aarch64::WRegister& dst, u32 val);
@@ -146,6 +150,7 @@ private:
 
   void MoveSToReg(const vixl::aarch64::WRegister& dst, CompileFlags cf);
   void MoveTToReg(const vixl::aarch64::WRegister& dst, CompileFlags cf);
+  void MoveMIPSRegToReg(const vixl::aarch64::WRegister& dst, Reg reg);
 
   std::unique_ptr<vixl::aarch64::Assembler> m_emitter;
   std::unique_ptr<vixl::aarch64::Assembler> m_far_emitter;

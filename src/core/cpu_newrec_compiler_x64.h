@@ -119,8 +119,8 @@ protected:
   void Compile_mtc2(CompileFlags cf) override;
   void Compile_cop2(CompileFlags cf) override;
 
-  void GeneratePGXPCallWithMIPSRegs(const void* func, Reg arg1reg = Reg::count, Reg arg2reg = Reg::count);
-  void GeneratePGXPMoveReg(u32 rd_and_rs, u32 host_rs_reg);
+  void GeneratePGXPCallWithMIPSRegs(const void* func, u32 arg1val, Reg arg2reg = Reg::count,
+                                    Reg arg3reg = Reg::count) override;
 
 private:
   void SwitchToFarCode(bool emit_jump, void (Xbyak::CodeGenerator::*jump_op)(const void*) = nullptr);

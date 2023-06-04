@@ -52,7 +52,6 @@ static constexpr bool rvIsCallerSavedRegister(u32 id)
 
 static void rvDisassembleAndDumpCode(const void* ptr, size_t size);
 static u32 rvGetHostInstructionCount(const void* ptr, size_t size);
-static void rvFlushInstructionCache(void* start, u32 size);
 static bool rvIsValidSExtITypeImm(u32 imm);
 static std::pair<s32, s32> rvGetAddressImmediates(const void* cur, const void* target);
 static void rvMoveAddressToReg(Assembler* armAsm, const GPR& reg, const void* addr);
@@ -108,15 +107,6 @@ u32 CPU::NewRec::rvGetHostInstructionCount(const void* ptr, size_t size)
 #else
   Log_DebugPrintf("Not compiled with DUMP_BLOCKS");
   return 0;
-#endif
-}
-
-void CPU::NewRec::rvFlushInstructionCache(void* start, u32 size)
-{
-#if defined(__GNUC__) || defined(__clang__)
-  __builtin___clear_cache(reinterpret_cast<char*>(start), reinterpret_cast<char*>(start) + size);
-#else
-  Panic("rvFlushInstructionCache() not implemented");
 #endif
 }
 
@@ -482,17 +472,9 @@ void CPU::NewRec::RISCV64Compiler::EndAndLinkBlock(const std::optional<u32>& new
 
 const void* CPU::NewRec::RISCV64Compiler::EndCompile(u32* code_size, u32* far_code_size)
 {
-  u8* code = m_emitter->GetBufferPointer(0);
-  const u32 my_code_size = static_cast<u32>(m_emitter->GetCodeBuffer().GetSizeInBytes());
-  const u32 my_far_code_size = static_cast<u32>(m_far_emitter->GetCodeBuffer().GetSizeInBytes());
-
-  if (my_code_size > 0)
-    rvFlushInstructionCache(code, my_code_size);
-  if (my_far_code_size > 0)
-    rvFlushInstructionCache(m_far_emitter->GetCursorPointer(), my_far_code_size);
-
-  *code_size = my_code_size;
-  *far_code_size = my_far_code_size;
+  u8* const code = m_emitter->GetBufferPointer(0);
+  *code_size = static_cast<u32>(m_emitter->GetCodeBuffer().GetSizeInBytes());
+  *far_code_size = static_cast<u32>(m_far_emitter->GetCodeBuffer().GetSizeInBytes());
   rvAsm = nullptr;
   m_far_emitter.reset();
   m_emitter.reset();
@@ -2214,7 +2196,7 @@ u32 CPU::NewRec::EmitJump(void* code, const void* dst, bool flush_icache)
   }
 
   if (flush_icache)
-    rvFlushInstructionCache(code, BLOCK_LINK_SIZE);
+    JitCodeBuffer::FlushInstructionCache(code, BLOCK_LINK_SIZE);
 
   return BLOCK_LINK_SIZE;
 }
@@ -2321,9 +2303,9 @@ u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* cod
 
   if (cycles_to_remove != 0)
   {
-    Assert(rvIsValidSExtITypeImm(-cycles_to_add));
+    Assert(rvIsValidSExtITypeImm(-cycles_to_remove));
     rvAsm->LW(RSCRATCH, PTR(&g_state.pending_ticks));
-    rvAsm->ADDIW(RSCRATCH, RSCRATCH, -cycles_to_add);
+    rvAsm->ADDIW(RSCRATCH, RSCRATCH, -cycles_to_remove);
     rvAsm->SW(RSCRATCH, PTR(&g_state.pending_ticks));
   }
 
@@ -2346,7 +2328,6 @@ u32 CPU::NewRec::BackpatchLoadStore(void* thunk_code, u32 thunk_space, void* cod
   rvEmitJmp(rvAsm, static_cast<const u8*>(code_address) + code_size);
 
   const u32 thunk_size = static_cast<u32>(rvAsm->GetCodeBuffer().GetSizeInBytes());
-  rvFlushInstructionCache(code_address, thunk_size);
 
   // backpatch to a jump to the slowmem handler
   EmitJump(code_address, rvAsm->GetBufferPointer(0), true);

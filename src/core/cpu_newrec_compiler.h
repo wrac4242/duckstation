@@ -248,6 +248,9 @@ protected:
   /// Flushes the load delay, but only if it matches the specified register.
   void FinishLoadDelayToReg(Reg reg);
 
+  /// Uses a caller-saved register for load delays when PGXP is enabled.
+  u32 GetFlagsForNewLoadDelayedReg() const;
+
   void BackupHostState();
   void RestoreHostState();
 
@@ -265,8 +268,8 @@ protected:
                                 MemoryAccessSize size, bool store, bool sign, u32 tflags);
   void CompileMoveRegTemplate(Reg dst, Reg src);
 
-  virtual void GeneratePGXPCallWithMIPSRegs(const void* func, Reg arg1reg = Reg::count, Reg arg2reg = Reg::count) = 0;
-  virtual void GeneratePGXPMoveReg(u32 rd_and_rs, u32 host_rs_reg) = 0;
+  virtual void GeneratePGXPCallWithMIPSRegs(const void* func, u32 arg1val, Reg arg2reg = Reg::count,
+                                            Reg arg3reg = Reg::count) = 0;
 
   virtual void Compile_Fallback() = 0;
 
@@ -445,6 +448,10 @@ protected:
   // we need two of these, one for branch delays, and another if we have an overflow in the delay slot
   std::array<HostStateBackup, 2> m_host_state_backup = {};
   u32 m_host_state_backup_count = 0;
+
+  // PGXP memory callbacks
+  static const std::array<const void*, 3> s_pgxp_mem_load_functions;
+  static const std::array<const void*, 3> s_pgxp_mem_store_functions;
 };
 
 extern Compiler* g_compiler;

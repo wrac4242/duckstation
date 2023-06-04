@@ -19,6 +19,13 @@ Log_SetChannel(NewRec::Compiler);
 // TODO: speculative constants
 // TODO: std::bitset in msvc has bounds checks even in release...
 
+const std::array<const void*, 3> CPU::NewRec::Compiler::s_pgxp_mem_load_functions = {
+  {reinterpret_cast<const void*>(&PGXP::CPU_LBx), reinterpret_cast<const void*>(&PGXP::CPU_LHx),
+   reinterpret_cast<const void*>(&PGXP::CPU_LW)}};
+const std::array<const void*, 3> CPU::NewRec::Compiler::s_pgxp_mem_store_functions = {
+  {reinterpret_cast<const void*>(&PGXP::CPU_SB), reinterpret_cast<const void*>(&PGXP::CPU_SH),
+   reinterpret_cast<const void*>(&PGXP::CPU_SW)}};
+
 CPU::NewRec::Compiler::Compiler() = default;
 
 CPU::NewRec::Compiler::~Compiler() = default;
@@ -271,6 +278,11 @@ void CPU::NewRec::Compiler::FinishLoadDelayToReg(Reg reg)
     return;
 
   FinishLoadDelay();
+}
+
+u32 CPU::NewRec::Compiler::GetFlagsForNewLoadDelayedReg() const
+{
+  return g_settings.gpu_pgxp_enable ? (HR_MODE_WRITE | HR_CALLEE_SAVED) : (HR_MODE_WRITE);
 }
 
 void CPU::NewRec::Compiler::ClearConstantReg(Reg r)
@@ -1125,14 +1137,10 @@ void CPU::NewRec::Compiler::AddLoadStoreInfo(void* code_address, u32 code_size, 
   DebugAssert(address_register < NUM_HOST_REGS);
   DebugAssert(data_register < NUM_HOST_REGS);
 
-  const bool save_for_pgxp = g_settings.gpu_pgxp_enable;
-  const u32 save_addr = save_for_pgxp ? address_register : NUM_HOST_REGS;
-  const u32 save_data = (save_for_pgxp && !is_load) ? data_register : NUM_HOST_REGS;
-
   u32 gpr_bitmask = 0;
   for (u32 i = 0; i < NUM_HOST_REGS; i++)
   {
-    if (IsHostRegAllocated(i) || i == save_addr || i == save_data)
+    if (IsHostRegAllocated(i))
       gpr_bitmask |= (1u << i);
   }
 
@@ -1284,6 +1292,8 @@ void CPU::NewRec::Compiler::CompileInstruction()
 
     default: Panic("Fixme"); break;
       // clang-format on
+
+#undef PGXPFN
   }
 
   ClearHostRegsNeeded();
@@ -1370,7 +1380,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
     std::array<Reg, 2> reg_args = {{Reg::count, Reg::count}};
     u32 num_reg_args = 0;
     if (tflags & TF_READS_S)
-        reg_args[num_reg_args++] = rs;
+      reg_args[num_reg_args++] = rs;
     if (tflags & TF_READS_T)
       reg_args[num_reg_args++] = rt;
     if (tflags & TF_READS_LO)
@@ -1379,7 +1389,7 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
       reg_args[num_reg_args++] = Reg::hi;
 
     DebugAssert(num_reg_args <= 2);
-    GeneratePGXPCallWithMIPSRegs(pgxp_cpu_func, reg_args[0], reg_args[1]);
+    GeneratePGXPCallWithMIPSRegs(pgxp_cpu_func, inst->bits, reg_args[0], reg_args[1]);
   }
 
   // if it's a commutative op, and we have one constant reg but not the other, swap them
@@ -1566,7 +1576,6 @@ void CPU::NewRec::Compiler::CompileLoadStoreTemplate(void (Compiler::*func)(Comp
   UpdateHostRegCounters();
 
   // constant address?
-  // TODO: move this to the backend address calculation?
   std::optional<VirtualMemoryAddress> addr;
   if (HasConstantReg(rs))
   {
@@ -1633,18 +1642,24 @@ void CPU::NewRec::Compiler::CompileMoveRegTemplate(Reg dst, Reg src)
   {
     DeleteMIPSReg(dst, false);
     SetConstantReg(dst, GetConstantRegU32(src));
-    return;
   }
-
-  // TODO: rename if src is no longer used
-  const u32 srcreg = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, src);
-  if (!TryRenameMIPSReg(dst, src, srcreg, Reg::count))
+  else
   {
-    const u32 dstreg = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, dst);
-    CopyHostReg(dstreg, srcreg);
+    const u32 srcreg = AllocateHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, src);
+    if (!TryRenameMIPSReg(dst, src, srcreg, Reg::count))
+    {
+      const u32 dstreg = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, dst);
+      CopyHostReg(dstreg, srcreg);
+      ClearHostRegNeeded(dstreg);
+    }
   }
 
-  GeneratePGXPMoveReg((static_cast<u32>(dst) << 8) | (static_cast<u32>(src)), srcreg);
+  if (g_settings.gpu_pgxp_enable)
+  {
+    // might've been renamed, so use dst here
+    GeneratePGXPCallWithMIPSRegs(reinterpret_cast<const void*>(&PGXP::CPU_MOVE),
+                                 (static_cast<u32>(dst) << 8) | (static_cast<u32>(src)), dst);
+  }
 }
 
 void CPU::NewRec::Compiler::Compile_j()

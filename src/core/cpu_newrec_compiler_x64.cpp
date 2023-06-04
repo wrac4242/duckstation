@@ -41,6 +41,9 @@ Log_SetChannel(CPU::NewRec);
 #error fixme
 #endif
 
+// PGXP TODO: LWL etc, MFC0
+// PGXP TODO: Spyro 1 level gates have issues.
+
 static constexpr u32 BACKPATCH_JMP_SIZE = 5;
 
 static bool IsCallerSavedRegister(u32 id)
@@ -616,29 +619,21 @@ void CPU::NewRec::X64Compiler::MoveMIPSRegToReg(const Xbyak::Reg32& dst, Reg reg
     cg->mov(dst, MipsPtr(reg));
 }
 
-void CPU::NewRec::X64Compiler::GeneratePGXPCallWithMIPSRegs(const void* func, Reg arg1reg /* = Reg::count */,
-                                                            Reg arg2reg /* = Reg::count */)
+void CPU::NewRec::X64Compiler::GeneratePGXPCallWithMIPSRegs(const void* func, u32 arg1val,
+                                                            Reg arg2reg /* = Reg::count */,
+                                                            Reg arg3reg /* = Reg::count */)
 {
   DebugAssert(g_settings.gpu_pgxp_enable);
 
   Flush(FLUSH_FOR_C_CALL);
 
-  if (arg1reg != Reg::count)
-    MoveMIPSRegToReg(RWARG2, arg1reg);
   if (arg2reg != Reg::count)
-    MoveMIPSRegToReg(RWARG3, arg2reg);
+    MoveMIPSRegToReg(RWARG2, arg2reg);
+  if (arg3reg != Reg::count)
+    MoveMIPSRegToReg(RWARG3, arg3reg);
 
-  cg->mov(RWARG1, inst->bits);
+  cg->mov(RWARG1, arg1val);
   cg->call(func);
-}
-
-void CPU::NewRec::X64Compiler::GeneratePGXPMoveReg(u32 rd_and_rs, u32 host_rs_reg)
-{
-  DebugAssert(host_rs_reg != static_cast<u32>(RWARG1.getIdx()));
-  Flush(FLUSH_FOR_C_CALL);
-  cg->mov(RWARG1, rd_and_rs);
-  cg->mov(RWARG2, Reg32(host_rs_reg));
-  cg->call(reinterpret_cast<const void*>(&PGXP::CPU_MOVE));
 }
 
 void CPU::NewRec::X64Compiler::Flush(u32 flags)
@@ -1602,21 +1597,18 @@ void CPU::NewRec::X64Compiler::Compile_lxx(CompileFlags cf, MemoryAccessSize siz
     if (cf.MipsT() == Reg::zero)
       return RWRET;
 
-    return Reg32(AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG,
-                                 cf.MipsT()));
+    return Reg32(AllocateHostReg(GetFlagsForNewLoadDelayedReg(),
+                                 EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, cf.MipsT()));
   });
 
   if (g_settings.gpu_pgxp_enable)
   {
     Flush(FLUSH_FOR_C_CALL);
 
-    static constexpr std::array<void (*)(u32, u32, u32), 3> pgxp_funcs = {&PGXP::CPU_LBx, &PGXP::CPU_LHx,
-                                                                          &PGXP::CPU_LW};
-
     cg->mov(RWARG1, inst->bits);
     cg->mov(RWARG2, addr);
-    cg->mov(RWARG3, RWRET);
-    cg->call(reinterpret_cast<const void*>(pgxp_funcs[static_cast<u32>(size)]));
+    cg->mov(RWARG3, data);
+    cg->call(s_pgxp_mem_load_functions[static_cast<u32>(size)]);
     FreeHostReg(addr_reg.value().getIdx());
   }
 }
@@ -1720,7 +1712,7 @@ void CPU::NewRec::X64Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSize si
                                           std::optional<Reg32>();
   FlushForLoadStore(address, false);
   const Reg32 addr = ComputeLoadStoreAddressArg(cf, address, addr_reg);
-  const Reg32 data = GenerateLoad(addr, MemoryAccessSize::Word, false, [this]() { return RWRET; });
+  GenerateLoad(addr, MemoryAccessSize::Word, false, [this]() { return RWRET; });
 
   const u32 index = static_cast<u32>(inst->r.rt.GetValue());
   const auto [ptr, action] = GetGTERegisterPointer(index, true);
@@ -1808,13 +1800,11 @@ void CPU::NewRec::X64Compiler::Compile_sxx(CompileFlags cf, MemoryAccessSize siz
 
   if (g_settings.gpu_pgxp_enable)
   {
-    static const std::array<void (*)(u32, u32, u32), 3> pgxp_funcs = {&PGXP::CPU_SB, &PGXP::CPU_SH, &PGXP::CPU_SW};
-
     Flush(FLUSH_FOR_C_CALL);
     MoveMIPSRegToReg(RWARG3, cf.MipsT());
     cg->mov(RWARG2, addr);
     cg->mov(RWARG1, inst->bits);
-    cg->call(reinterpret_cast<const void*>(pgxp_funcs[static_cast<u32>(size)]));
+    cg->call(s_pgxp_mem_store_functions[static_cast<u32>(size)]);
     FreeHostReg(addr_reg.value().getIdx());
   }
 }
@@ -1895,7 +1885,7 @@ void CPU::NewRec::X64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSize si
   {
     case GTERegisterAccessAction::Direct:
     {
-      cg->mov(RWRET, cg->dword[PTR(ptr)]);
+      cg->mov(RWARG2, cg->dword[PTR(ptr)]);
     }
     break;
 
@@ -1905,6 +1895,7 @@ void CPU::NewRec::X64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSize si
       Flush(FLUSH_FOR_C_CALL);
       cg->mov(RWARG1, index);
       cg->call(&GTE::ReadRegister);
+      cg->mov(RWARG2, RWRET);
     }
     break;
 
@@ -1920,7 +1911,7 @@ void CPU::NewRec::X64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSize si
   {
     FlushForLoadStore(address, true);
     const Reg32 addr = ComputeLoadStoreAddressArg(cf, address);
-    GenerateStore(addr, RWRET, size);
+    GenerateStore(addr, RWARG2, size);
     return;
   }
 
@@ -1929,8 +1920,8 @@ void CPU::NewRec::X64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSize si
   const Reg32 data_backup = Reg32(AllocateTempHostReg(HR_CALLEE_SAVED));
   FlushForLoadStore(address, true);
   ComputeLoadStoreAddressArg(cf, address, addr_reg);
-  cg->mov(data_backup, RWRET);
-  GenerateStore(addr_reg, RWRET, size);
+  cg->mov(data_backup, RWARG2);
+  GenerateStore(addr_reg, RWARG2, size);
 
   Flush(FLUSH_FOR_C_CALL);
   cg->mov(RWARG3, data_backup);
@@ -2083,7 +2074,8 @@ void CPU::NewRec::X64Compiler::Compile_mfc2(CompileFlags cf)
   u32 hreg;
   if (action == GTERegisterAccessAction::Direct)
   {
-    hreg = AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, rt);
+    hreg = AllocateHostReg(GetFlagsForNewLoadDelayedReg(),
+                           EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, rt);
     cg->mov(Reg32(hreg), cg->dword[PTR(ptr)]);
   }
   else if (action == GTERegisterAccessAction::CallHandler)
@@ -2092,7 +2084,8 @@ void CPU::NewRec::X64Compiler::Compile_mfc2(CompileFlags cf)
     cg->mov(RWARG1, index);
     cg->call(&GTE::ReadRegister);
 
-    hreg = AllocateHostReg(HR_MODE_WRITE, EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, rt);
+    hreg = AllocateHostReg(GetFlagsForNewLoadDelayedReg(),
+                           EMULATE_LOAD_DELAYS ? HR_TYPE_NEXT_LOAD_DELAY_VALUE : HR_TYPE_CPU_REG, rt);
     cg->mov(Reg32(hreg), RWRET);
   }
   else
