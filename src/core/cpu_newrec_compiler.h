@@ -213,6 +213,7 @@ protected:
   u32 AllocateHostReg(u32 flags, HostRegAllocType type = HR_TYPE_TEMP, Reg reg = Reg::count);
   std::optional<u32> CheckHostReg(u32 flags, HostRegAllocType type = HR_TYPE_TEMP, Reg reg = Reg::count);
   u32 AllocateTempHostReg(u32 flags = 0);
+  void SwapHostRegAlloc(u32 lhs, u32 rhs);
   void FlushHostReg(u32 reg);
   void FreeHostReg(u32 reg);
   void ClearHostReg(u32 reg);

@@ -565,7 +565,7 @@ u32 CPU::NewRec::Compiler::GetFreeHostReg(u32 flags)
           if (IsHostRegAllocated(caller_saved_lowest))
             FreeHostReg(caller_saved_lowest);
           CopyHostReg(caller_saved_lowest, lowest);
-          std::swap(m_host_regs[caller_saved_lowest], m_host_regs[lowest]);
+          SwapHostRegAlloc(caller_saved_lowest, lowest);
           DebugAssert(!IsHostRegAllocated(lowest));
           return lowest;
         }
@@ -753,7 +753,7 @@ std::optional<u32> CPU::NewRec::Compiler::CheckHostReg(u32 flags, HostRegAllocTy
       Log_DebugPrintf("Rename host reg %s to %s for callee saved", GetHostRegName(i), GetHostRegName(new_reg));
 
       CopyHostReg(new_reg, i);
-      std::swap(m_host_regs[i], m_host_regs[new_reg]);
+      SwapHostRegAlloc(i, new_reg);
       DebugAssert(!IsHostRegAllocated(i));
       return new_reg;
     }
@@ -767,6 +767,19 @@ std::optional<u32> CPU::NewRec::Compiler::CheckHostReg(u32 flags, HostRegAllocTy
 u32 CPU::NewRec::Compiler::AllocateTempHostReg(u32 flags)
 {
   return AllocateHostReg(flags, HR_TYPE_TEMP);
+}
+
+void CPU::NewRec::Compiler::SwapHostRegAlloc(u32 lhs, u32 rhs)
+{
+  HostRegAlloc& lra = m_host_regs[lhs];
+  HostRegAlloc& rra = m_host_regs[rhs];
+
+  const u8 lra_flags = lra.flags;
+  lra.flags = (lra.flags & IMMUTABLE_HR_FLAGS) | (rra.flags & ~IMMUTABLE_HR_FLAGS);
+  rra.flags = (rra.flags & IMMUTABLE_HR_FLAGS) | (lra_flags & ~IMMUTABLE_HR_FLAGS);
+  std::swap(lra.type, rra.type);
+  std::swap(lra.reg, rra.reg);
+  std::swap(lra.counter, rra.counter);
 }
 
 void CPU::NewRec::Compiler::FlushHostReg(u32 reg)
