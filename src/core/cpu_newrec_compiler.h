@@ -108,27 +108,28 @@ protected:
   {
     TF_READS_S = (1 << 0),
     TF_READS_T = (1 << 1),
-    TF_READS_D = (1 << 2),
-    TF_READS_LO = (1 << 3),
-    TF_READS_HI = (1 << 4),
-    TF_WRITES_D = (1 << 5),
-    TF_WRITES_T = (1 << 6),
-    TF_WRITES_LO = (1 << 7),
-    TF_WRITES_HI = (1 << 8),
-    TF_COMMUTATIVE = (1 << 9), // S op T == T op S
-    TF_CAN_OVERFLOW = (1 << 10),
+    TF_READS_LO = (1 << 2),
+    TF_READS_HI = (1 << 3),
+    TF_WRITES_D = (1 << 4),
+    TF_WRITES_T = (1 << 5),
+    TF_WRITES_LO = (1 << 6),
+    TF_WRITES_HI = (1 << 7),
+    TF_COMMUTATIVE = (1 << 8), // S op T == T op S
+    TF_CAN_OVERFLOW = (1 << 9),
 
     // TF_NORENAME = // TODO
-    TF_LOAD_DELAY = (1 << 11),
-    TF_GTE_STALL = (1 << 12),
+    TF_LOAD_DELAY = (1 << 10),
+    TF_GTE_STALL = (1 << 11),
 
-    TF_NO_NOP = (1 << 13),
-    TF_NEEDS_REG_S = (1 << 14),
-    TF_NEEDS_REG_T = (1 << 15),
-    TF_CAN_SWAP_DELAY_SLOT = (1 << 16),
+    TF_NO_NOP = (1 << 12),
+    TF_NEEDS_REG_S = (1 << 13),
+    TF_NEEDS_REG_T = (1 << 14),
+    TF_CAN_SWAP_DELAY_SLOT = (1 << 15),
 
-    TF_RENAME_WITH_ZERO_T = (1 << 17), // add commutative for S as well
-    TF_RENAME_WITH_ZERO_IMM = (1 << 18),
+    TF_RENAME_WITH_ZERO_T = (1 << 16), // add commutative for S as well
+    TF_RENAME_WITH_ZERO_IMM = (1 << 17),
+
+    TF_PGXP_WITHOUT_CPU = (1 << 18),
   };
 
   enum HostRegFlags : u8
@@ -257,11 +258,15 @@ protected:
   void CompileInstruction();
   void CompileBranchDelaySlot(bool dirty_pc = true);
 
-  void CompileTemplate(void (Compiler::*const_func)(CompileFlags), void (Compiler::*func)(CompileFlags), u32 tflags);
+  void CompileTemplate(void (Compiler::*const_func)(CompileFlags), void (Compiler::*func)(CompileFlags),
+                       const void* pgxp_cpu_func, u32 tflags);
   void CompileLoadStoreTemplate(void (Compiler::*func)(CompileFlags, MemoryAccessSize, bool,
                                                        const std::optional<VirtualMemoryAddress>&),
                                 MemoryAccessSize size, bool store, bool sign, u32 tflags);
   void CompileMoveRegTemplate(Reg dst, Reg src);
+
+  virtual void GeneratePGXPCallWithMIPSRegs(const void* func, Reg arg1reg = Reg::count, Reg arg2reg = Reg::count) = 0;
+  virtual void GeneratePGXPMoveReg(u32 rd_and_rs, u32 host_rs_reg) = 0;
 
   virtual void Compile_Fallback() = 0;
 

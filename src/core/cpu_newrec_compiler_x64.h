@@ -3,6 +3,7 @@
 
 #pragma once
 #include "cpu_newrec_compiler.h"
+#include <initializer_list>
 #include <memory>
 
 // We need to include windows.h before xbyak does..
@@ -94,7 +95,8 @@ protected:
   Xbyak::Reg32 ComputeLoadStoreAddressArg(CompileFlags cf, const std::optional<VirtualMemoryAddress>& address,
                                           const std::optional<const Xbyak::Reg32>& reg = std::nullopt);
   template<typename RegAllocFn>
-  void GenerateLoad(const Xbyak::Reg32& addr_reg, MemoryAccessSize size, bool sign, const RegAllocFn& dst_reg_alloc);
+  Xbyak::Reg32 GenerateLoad(const Xbyak::Reg32& addr_reg, MemoryAccessSize size, bool sign,
+                            const RegAllocFn& dst_reg_alloc);
   void GenerateStore(const Xbyak::Reg32& addr_reg, const Xbyak::Reg32& value_reg, MemoryAccessSize size);
   void Compile_lxx(CompileFlags cf, MemoryAccessSize size, bool sign,
                    const std::optional<VirtualMemoryAddress>& address) override;
@@ -117,6 +119,9 @@ protected:
   void Compile_mtc2(CompileFlags cf) override;
   void Compile_cop2(CompileFlags cf) override;
 
+  void GeneratePGXPCallWithMIPSRegs(const void* func, Reg arg1reg = Reg::count, Reg arg2reg = Reg::count);
+  void GeneratePGXPMoveReg(u32 rd_and_rs, u32 host_rs_reg);
+
 private:
   void SwitchToFarCode(bool emit_jump, void (Xbyak::CodeGenerator::*jump_op)(const void*) = nullptr);
   void SwitchToNearCode(bool emit_jump, void (Xbyak::CodeGenerator::*jump_op)(const void*) = nullptr);
@@ -133,6 +138,7 @@ private:
   Xbyak::Reg32 MoveTToD(CompileFlags cf);
   void MoveSToReg(const Xbyak::Reg32& dst, CompileFlags cf);
   void MoveTToReg(const Xbyak::Reg32& dst, CompileFlags cf);
+  void MoveMIPSRegToReg(const Xbyak::Reg32& dst, Reg reg);
 
   std::unique_ptr<Xbyak::CodeGenerator> m_emitter;
   std::unique_ptr<Xbyak::CodeGenerator> m_far_emitter;

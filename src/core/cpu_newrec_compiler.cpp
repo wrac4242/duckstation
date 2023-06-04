@@ -9,6 +9,7 @@
 #include "cpu_core_private.h"
 #include "cpu_disasm.h"
 #include "cpu_newrec_private.h"
+#include "pgxp.h"
 #include "settings.h"
 #include <cstdint>
 #include <limits>
@@ -16,6 +17,7 @@ Log_SetChannel(NewRec::Compiler);
 
 // TODO: direct link skip delay slot check
 // TODO: speculative constants
+// TODO: std::bitset in msvc has bounds checks even in release...
 
 CPU::NewRec::Compiler::Compiler() = default;
 
@@ -540,14 +542,19 @@ u32 CPU::NewRec::Compiler::GetFreeHostReg(u32 flags)
         u16 caller_saved_lowest_count = std::numeric_limits<u16>::max();
         for (u32 i = 0; i < NUM_HOST_REGS; i++)
         {
-          if (!IsHostRegAllocated(i))
+          constexpr u32 caller_req_flags = HR_USABLE;
+          constexpr u32 caller_req_mask = HR_USABLE | HR_CALLEE_SAVED;
+          const HostRegAlloc& caller_ra = m_host_regs[i];
+          if ((caller_ra.flags & caller_req_mask) != caller_req_flags)
+            continue;
+
+          if (!(caller_ra.flags & HR_ALLOCATED))
           {
             caller_saved_lowest = i;
             caller_saved_lowest_count = 0;
             break;
           }
 
-          const HostRegAlloc& caller_ra = m_host_regs[i];
           if (caller_ra.type == HR_TYPE_TEMP)
             continue;
 
@@ -560,7 +567,7 @@ u32 CPU::NewRec::Compiler::GetFreeHostReg(u32 flags)
 
         if (caller_saved_lowest_count < lowest_count)
         {
-          Log_DebugPrintf("Moving caller-saved register %s in host register %s to %s for allocation",
+          Log_DebugPrintf("Moving caller-saved host register %s with MIPS register %s to %s for allocation",
                           GetHostRegName(lowest), GetRegName(ra.reg), GetHostRegName(caller_saved_lowest));
           if (IsHostRegAllocated(caller_saved_lowest))
             FreeHostReg(caller_saved_lowest);
@@ -1118,10 +1125,14 @@ void CPU::NewRec::Compiler::AddLoadStoreInfo(void* code_address, u32 code_size, 
   DebugAssert(address_register < NUM_HOST_REGS);
   DebugAssert(data_register < NUM_HOST_REGS);
 
+  const bool save_for_pgxp = g_settings.gpu_pgxp_enable;
+  const u32 save_addr = save_for_pgxp ? address_register : NUM_HOST_REGS;
+  const u32 save_data = (save_for_pgxp && !is_load) ? data_register : NUM_HOST_REGS;
+
   u32 gpr_bitmask = 0;
   for (u32 i = 0; i < NUM_HOST_REGS; i++)
   {
-    if (IsHostRegAllocated(i))
+    if (IsHostRegAllocated(i) || i == save_addr || i == save_data)
       gpr_bitmask |= (1u << i);
   }
 
@@ -1151,40 +1162,43 @@ void CPU::NewRec::Compiler::CompileInstruction()
 
   switch (inst->op)
   {
+#define PGXPFN(x) reinterpret_cast<const void*>(&PGXP::x)
+
       // clang-format off
+      // TODO: PGXP for jalr
 
     case InstructionOp::funct:
     {
       switch (inst->r.funct)
       {
-        case InstructionFunct::sll: CompileTemplate(&Compiler::Compile_sll_const, &Compiler::Compile_sll, TF_WRITES_D | TF_READS_T); break;
-        case InstructionFunct::srl: CompileTemplate(&Compiler::Compile_srl_const, &Compiler::Compile_srl, TF_WRITES_D | TF_READS_T); break;
-        case InstructionFunct::sra: CompileTemplate(&Compiler::Compile_sra_const, &Compiler::Compile_sra, TF_WRITES_D | TF_READS_T); break;
-        case InstructionFunct::sllv: CompileTemplate(&Compiler::Compile_sllv_const, &Compiler::Compile_sllv, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
-        case InstructionFunct::srlv: CompileTemplate(&Compiler::Compile_srlv_const, &Compiler::Compile_srlv, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
-        case InstructionFunct::srav: CompileTemplate(&Compiler::Compile_srav_const, &Compiler::Compile_srav, TF_WRITES_D | TF_READS_S | TF_READS_T); break;
-        case InstructionFunct::jr: CompileTemplate(&Compiler::Compile_jr_const, &Compiler::Compile_jr, TF_READS_S); break;
-        case InstructionFunct::jalr: CompileTemplate(&Compiler::Compile_jalr_const, &Compiler::Compile_jalr, /*TF_WRITES_D |*/ TF_READS_S | TF_NO_NOP); break;
+        case InstructionFunct::sll: CompileTemplate(&Compiler::Compile_sll_const, &Compiler::Compile_sll, PGXPFN(CPU_SLL), TF_WRITES_D | TF_READS_T); break;
+        case InstructionFunct::srl: CompileTemplate(&Compiler::Compile_srl_const, &Compiler::Compile_srl, PGXPFN(CPU_SRL), TF_WRITES_D | TF_READS_T); break;
+        case InstructionFunct::sra: CompileTemplate(&Compiler::Compile_sra_const, &Compiler::Compile_sra, PGXPFN(CPU_SRA), TF_WRITES_D | TF_READS_T); break;
+        case InstructionFunct::sllv: CompileTemplate(&Compiler::Compile_sllv_const, &Compiler::Compile_sllv, PGXPFN(CPU_SLLV), TF_WRITES_D | TF_READS_S | TF_READS_T); break;
+        case InstructionFunct::srlv: CompileTemplate(&Compiler::Compile_srlv_const, &Compiler::Compile_srlv, PGXPFN(CPU_SRLV), TF_WRITES_D | TF_READS_S | TF_READS_T); break;
+        case InstructionFunct::srav: CompileTemplate(&Compiler::Compile_srav_const, &Compiler::Compile_srav, PGXPFN(CPU_SRAV), TF_WRITES_D | TF_READS_S | TF_READS_T); break;
+        case InstructionFunct::jr: CompileTemplate(&Compiler::Compile_jr_const, &Compiler::Compile_jr, nullptr, TF_READS_S); break;
+        case InstructionFunct::jalr: CompileTemplate(&Compiler::Compile_jalr_const, &Compiler::Compile_jalr, nullptr, /*TF_WRITES_D |*/ TF_READS_S | TF_NO_NOP); break;
         case InstructionFunct::syscall: Compile_syscall(); break;
         case InstructionFunct::break_: Compile_break(); break;
         case InstructionFunct::mfhi: CompileMoveRegTemplate(inst->r.rd, Reg::hi); break;
         case InstructionFunct::mthi: CompileMoveRegTemplate(Reg::hi, inst->r.rs); break;
         case InstructionFunct::mflo: CompileMoveRegTemplate(inst->r.rd, Reg::lo); break;
         case InstructionFunct::mtlo: CompileMoveRegTemplate(Reg::lo, inst->r.rs); break;
-        case InstructionFunct::mult: CompileTemplate(&Compiler::Compile_mult_const, &Compiler::Compile_mult, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
-        case InstructionFunct::multu: CompileTemplate(&Compiler::Compile_multu_const, &Compiler::Compile_multu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
-        case InstructionFunct::div: CompileTemplate(&Compiler::Compile_div_const, &Compiler::Compile_div, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
-        case InstructionFunct::divu: CompileTemplate(&Compiler::Compile_divu_const, &Compiler::Compile_divu, TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
-        case InstructionFunct::add: CompileTemplate(&Compiler::Compile_add_const, &Compiler::Compile_add, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_OVERFLOW | TF_RENAME_WITH_ZERO_T); break;
-        case InstructionFunct::addu: CompileTemplate(&Compiler::Compile_addu_const, &Compiler::Compile_addu, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_T); break;
-        case InstructionFunct::sub: CompileTemplate(&Compiler::Compile_sub_const, &Compiler::Compile_sub, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_CAN_OVERFLOW | TF_RENAME_WITH_ZERO_T); break;
-        case InstructionFunct::subu: CompileTemplate(&Compiler::Compile_subu_const, &Compiler::Compile_subu, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_RENAME_WITH_ZERO_T); break;
-        case InstructionFunct::and_: CompileTemplate(&Compiler::Compile_and_const, &Compiler::Compile_and, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
-        case InstructionFunct::or_: CompileTemplate(&Compiler::Compile_or_const, &Compiler::Compile_or, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_T); break;
-        case InstructionFunct::xor_: CompileTemplate(&Compiler::Compile_xor_const, &Compiler::Compile_xor, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_T); break;
-        case InstructionFunct::nor: CompileTemplate(&Compiler::Compile_nor_const, &Compiler::Compile_nor, TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
-        case InstructionFunct::slt: CompileTemplate(&Compiler::Compile_slt_const, &Compiler::Compile_slt, TF_WRITES_D | TF_READS_T | TF_READS_S); break;
-        case InstructionFunct::sltu: CompileTemplate(&Compiler::Compile_sltu_const, &Compiler::Compile_sltu, TF_WRITES_D | TF_READS_T | TF_READS_S); break;
+        case InstructionFunct::mult: CompileTemplate(&Compiler::Compile_mult_const, &Compiler::Compile_mult, PGXPFN(CPU_MULT), TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
+        case InstructionFunct::multu: CompileTemplate(&Compiler::Compile_multu_const, &Compiler::Compile_multu, PGXPFN(CPU_MULTU), TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI | TF_COMMUTATIVE); break;
+        case InstructionFunct::div: CompileTemplate(&Compiler::Compile_div_const, &Compiler::Compile_div, PGXPFN(CPU_DIV), TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
+        case InstructionFunct::divu: CompileTemplate(&Compiler::Compile_divu_const, &Compiler::Compile_divu, PGXPFN(CPU_DIVU), TF_READS_S | TF_READS_T | TF_WRITES_LO | TF_WRITES_HI); break;
+        case InstructionFunct::add: CompileTemplate(&Compiler::Compile_add_const, &Compiler::Compile_add, PGXPFN(CPU_ADD), TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_OVERFLOW | TF_RENAME_WITH_ZERO_T); break;
+        case InstructionFunct::addu: CompileTemplate(&Compiler::Compile_addu_const, &Compiler::Compile_addu, PGXPFN(CPU_ADD), TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_T); break;
+        case InstructionFunct::sub: CompileTemplate(&Compiler::Compile_sub_const, &Compiler::Compile_sub, PGXPFN(CPU_SUB), TF_WRITES_D | TF_READS_S | TF_READS_T | TF_CAN_OVERFLOW | TF_RENAME_WITH_ZERO_T); break;
+        case InstructionFunct::subu: CompileTemplate(&Compiler::Compile_subu_const, &Compiler::Compile_subu, PGXPFN(CPU_SUB), TF_WRITES_D | TF_READS_S | TF_READS_T | TF_RENAME_WITH_ZERO_T); break;
+        case InstructionFunct::and_: CompileTemplate(&Compiler::Compile_and_const, &Compiler::Compile_and, PGXPFN(CPU_AND_), TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
+        case InstructionFunct::or_: CompileTemplate(&Compiler::Compile_or_const, &Compiler::Compile_or, PGXPFN(CPU_OR_), TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_T); break;
+        case InstructionFunct::xor_: CompileTemplate(&Compiler::Compile_xor_const, &Compiler::Compile_xor, PGXPFN(CPU_XOR_), TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_T); break;
+        case InstructionFunct::nor: CompileTemplate(&Compiler::Compile_nor_const, &Compiler::Compile_nor, PGXPFN(CPU_NOR), TF_WRITES_D | TF_READS_S | TF_READS_T | TF_COMMUTATIVE); break;
+        case InstructionFunct::slt: CompileTemplate(&Compiler::Compile_slt_const, &Compiler::Compile_slt, PGXPFN(CPU_SLT), TF_WRITES_D | TF_READS_T | TF_READS_S); break;
+        case InstructionFunct::sltu: CompileTemplate(&Compiler::Compile_sltu_const, &Compiler::Compile_sltu, PGXPFN(CPU_SLTU), TF_WRITES_D | TF_READS_T | TF_READS_S); break;
 
       default: Panic("fixme funct"); break;
       }
@@ -1194,19 +1208,19 @@ void CPU::NewRec::Compiler::CompileInstruction()
     case InstructionOp::j: Compile_j(); break;
     case InstructionOp::jal: Compile_jal(); break;
 
-    case InstructionOp::b: CompileTemplate(&Compiler::Compile_b_const, &Compiler::Compile_b, TF_READS_S | TF_CAN_SWAP_DELAY_SLOT); break;
-    case InstructionOp::blez: CompileTemplate(&Compiler::Compile_blez_const, &Compiler::Compile_blez, TF_READS_S | TF_CAN_SWAP_DELAY_SLOT); break;
-    case InstructionOp::bgtz: CompileTemplate(&Compiler::Compile_bgtz_const, &Compiler::Compile_bgtz, TF_READS_S | TF_CAN_SWAP_DELAY_SLOT); break;
-    case InstructionOp::beq: CompileTemplate(&Compiler::Compile_beq_const, &Compiler::Compile_beq, TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_SWAP_DELAY_SLOT); break;
-    case InstructionOp::bne: CompileTemplate(&Compiler::Compile_bne_const, &Compiler::Compile_bne, TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_SWAP_DELAY_SLOT); break;
+    case InstructionOp::b: CompileTemplate(&Compiler::Compile_b_const, &Compiler::Compile_b, nullptr, TF_READS_S | TF_CAN_SWAP_DELAY_SLOT); break;
+    case InstructionOp::blez: CompileTemplate(&Compiler::Compile_blez_const, &Compiler::Compile_blez, nullptr, TF_READS_S | TF_CAN_SWAP_DELAY_SLOT); break;
+    case InstructionOp::bgtz: CompileTemplate(&Compiler::Compile_bgtz_const, &Compiler::Compile_bgtz, nullptr, TF_READS_S | TF_CAN_SWAP_DELAY_SLOT); break;
+    case InstructionOp::beq: CompileTemplate(&Compiler::Compile_beq_const, &Compiler::Compile_beq, nullptr, TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_SWAP_DELAY_SLOT); break;
+    case InstructionOp::bne: CompileTemplate(&Compiler::Compile_bne_const, &Compiler::Compile_bne, nullptr, TF_READS_S | TF_READS_T | TF_COMMUTATIVE | TF_CAN_SWAP_DELAY_SLOT); break;
 
-    case InstructionOp::addi: CompileTemplate(&Compiler::Compile_addi_const, &Compiler::Compile_addi, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_CAN_OVERFLOW | TF_RENAME_WITH_ZERO_IMM); break;
-    case InstructionOp::addiu: CompileTemplate(&Compiler::Compile_addiu_const, &Compiler::Compile_addiu, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_IMM); break;
-    case InstructionOp::slti: CompileTemplate(&Compiler::Compile_slti_const, &Compiler::Compile_slti, TF_WRITES_T | TF_READS_S); break;
-    case InstructionOp::sltiu: CompileTemplate(&Compiler::Compile_sltiu_const, &Compiler::Compile_sltiu, TF_WRITES_T | TF_READS_S); break;
-    case InstructionOp::andi: CompileTemplate(&Compiler::Compile_andi_const, &Compiler::Compile_andi, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE); break;
-    case InstructionOp::ori: CompileTemplate(&Compiler::Compile_ori_const, &Compiler::Compile_ori, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_IMM); break;
-    case InstructionOp::xori: CompileTemplate(&Compiler::Compile_xori_const, &Compiler::Compile_xori, TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_IMM); break;
+    case InstructionOp::addi: CompileTemplate(&Compiler::Compile_addi_const, &Compiler::Compile_addi, PGXPFN(CPU_ADDI), TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_CAN_OVERFLOW | TF_RENAME_WITH_ZERO_IMM); break;
+    case InstructionOp::addiu: CompileTemplate(&Compiler::Compile_addiu_const, &Compiler::Compile_addiu, PGXPFN(CPU_ADDI), TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_IMM); break;
+    case InstructionOp::slti: CompileTemplate(&Compiler::Compile_slti_const, &Compiler::Compile_slti, PGXPFN(CPU_SLTI), TF_WRITES_T | TF_READS_S); break;
+    case InstructionOp::sltiu: CompileTemplate(&Compiler::Compile_sltiu_const, &Compiler::Compile_sltiu, PGXPFN(CPU_SLTIU), TF_WRITES_T | TF_READS_S); break;
+    case InstructionOp::andi: CompileTemplate(&Compiler::Compile_andi_const, &Compiler::Compile_andi, PGXPFN(CPU_ANDI), TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE); break;
+    case InstructionOp::ori: CompileTemplate(&Compiler::Compile_ori_const, &Compiler::Compile_ori, PGXPFN(CPU_ORI), TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_IMM); break;
+    case InstructionOp::xori: CompileTemplate(&Compiler::Compile_xori_const, &Compiler::Compile_xori, PGXPFN(CPU_XORI), TF_WRITES_T | TF_READS_S | TF_COMMUTATIVE | TF_RENAME_WITH_ZERO_IMM); break;
     case InstructionOp::lui: Compile_lui(); break;
 
     case InstructionOp::lb: CompileLoadStoreTemplate(&Compiler::Compile_lxx, MemoryAccessSize::Byte, false, true, TF_READS_S | TF_WRITES_T | TF_LOAD_DELAY); break;
@@ -1228,8 +1242,8 @@ void CPU::NewRec::Compiler::CompileInstruction()
         {
           switch (inst->cop.CommonOp())
           {
-            case CopCommonInstruction::mfcn: CompileTemplate(nullptr, &Compiler::Compile_mfc0, TF_WRITES_T | TF_LOAD_DELAY); break;
-            case CopCommonInstruction::mtcn: CompileTemplate(nullptr, &Compiler::Compile_mtc0, TF_READS_T); break;
+            case CopCommonInstruction::mfcn: CompileTemplate(nullptr, &Compiler::Compile_mfc0, nullptr, TF_WRITES_T | TF_LOAD_DELAY); break;
+            case CopCommonInstruction::mtcn: CompileTemplate(nullptr, &Compiler::Compile_mtc0, PGXPFN(CPU_MTC0), TF_READS_T); break;
             default: Compile_Fallback(); break;
           }
         }
@@ -1237,7 +1251,7 @@ void CPU::NewRec::Compiler::CompileInstruction()
         {
           switch (inst->cop.Cop0Op())
           {
-            case Cop0Instruction::rfe: CompileTemplate(nullptr, &Compiler::Compile_rfe, 0); break;
+            case Cop0Instruction::rfe: CompileTemplate(nullptr, &Compiler::Compile_rfe, nullptr, 0); break;
             default: Compile_Fallback(); break;
           }
         }
@@ -1250,17 +1264,17 @@ void CPU::NewRec::Compiler::CompileInstruction()
         {
           switch (inst->cop.CommonOp())
           {
-            case CopCommonInstruction::mfcn: CompileTemplate(nullptr, &Compiler::Compile_mfc2, TF_GTE_STALL); break;
-            case CopCommonInstruction::cfcn: CompileTemplate(nullptr, &Compiler::Compile_mfc2, TF_GTE_STALL); break;
-            case CopCommonInstruction::mtcn: CompileTemplate(nullptr, &Compiler::Compile_mtc2, TF_GTE_STALL | TF_READS_T); break;
-            case CopCommonInstruction::ctcn: CompileTemplate(nullptr, &Compiler::Compile_mtc2, TF_GTE_STALL | TF_READS_T); break;
+            case CopCommonInstruction::mfcn: CompileTemplate(nullptr, &Compiler::Compile_mfc2, nullptr, TF_GTE_STALL); break;
+            case CopCommonInstruction::cfcn: CompileTemplate(nullptr, &Compiler::Compile_mfc2, nullptr, TF_GTE_STALL); break;
+            case CopCommonInstruction::mtcn: CompileTemplate(nullptr, &Compiler::Compile_mtc2, PGXPFN(CPU_MTC2), TF_GTE_STALL | TF_READS_T | TF_PGXP_WITHOUT_CPU); break;
+            case CopCommonInstruction::ctcn: CompileTemplate(nullptr, &Compiler::Compile_mtc2, PGXPFN(CPU_MTC2), TF_GTE_STALL | TF_READS_T | TF_PGXP_WITHOUT_CPU); break;
             default: Compile_Fallback(); break;
           }
         }
         else
         {
           // GTE ops
-          CompileTemplate(nullptr, &Compiler::Compile_cop2, TF_GTE_STALL);
+          CompileTemplate(nullptr, &Compiler::Compile_cop2, nullptr, TF_GTE_STALL);
         }
       }
       break;
@@ -1302,7 +1316,7 @@ void CPU::NewRec::Compiler::CompileBranchDelaySlot(bool dirty_pc /* = true */)
 }
 
 void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(CompileFlags),
-                                            void (Compiler::*func)(CompileFlags), u32 tflags)
+                                            void (Compiler::*func)(CompileFlags), const void* pgxp_cpu_func, u32 tflags)
 {
   // TODO: This is where we will do memory operand optimization. Remember to kill constants!
   // TODO: Swap S and T if commutative
@@ -1349,6 +1363,23 @@ void CPU::NewRec::Compiler::CompileTemplate(void (Compiler::*const_func)(Compile
   {
     CompileMoveRegTemplate(rt, rs);
     return;
+  }
+
+  if (pgxp_cpu_func && g_settings.gpu_pgxp_enable && ((tflags & TF_PGXP_WITHOUT_CPU) || g_settings.UsingPGXPCPUMode()))
+  {
+    std::array<Reg, 2> reg_args = {{Reg::count, Reg::count}};
+    u32 num_reg_args = 0;
+    if (tflags & TF_READS_S)
+        reg_args[num_reg_args++] = rs;
+    if (tflags & TF_READS_T)
+      reg_args[num_reg_args++] = rt;
+    if (tflags & TF_READS_LO)
+      reg_args[num_reg_args++] = Reg::lo;
+    if (tflags & TF_READS_HI)
+      reg_args[num_reg_args++] = Reg::hi;
+
+    DebugAssert(num_reg_args <= 2);
+    GeneratePGXPCallWithMIPSRegs(pgxp_cpu_func, reg_args[0], reg_args[1]);
   }
 
   // if it's a commutative op, and we have one constant reg but not the other, swap them
@@ -1612,6 +1643,8 @@ void CPU::NewRec::Compiler::CompileMoveRegTemplate(Reg dst, Reg src)
     const u32 dstreg = AllocateHostReg(HR_MODE_WRITE, HR_TYPE_CPU_REG, dst);
     CopyHostReg(dstreg, srcreg);
   }
+
+  GeneratePGXPMoveReg((static_cast<u32>(dst) << 8) | (static_cast<u32>(src)), srcreg);
 }
 
 void CPU::NewRec::Compiler::Compile_j()
