@@ -84,7 +84,7 @@ static constexpr u32 RGBA5551ToRGBA8888(u16 color)
   u8 b = Truncate8((color >> 10) & 31);
   u8 a = Truncate8((color >> 15) & 1);
 
-  // 00012345 -> 1234545
+  // 00012345 -> 12345345
   b = (b << 3) | (b & 0b111);
   g = (g << 3) | (g & 0b111);
   r = (r << 3) | (r & 0b111);
